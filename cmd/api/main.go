@@ -52,7 +52,9 @@ func main() {
 		MaxPresignedPartNum: cfg.UploadMaxParts,
 	}
 
-	handler := apphttp.NewServer(cfg, queries, uploadSvc)
+	shipmentSvc := &service.ShipmentService{Store: queries}
+
+	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {

@@ -52,10 +52,11 @@ make migrate-up
 make run
 ```
 
-### 5) uploads API 動作確認（ローカル）
+## API 動作確認（ローカル）
+
+### uploads
 
 ```bash
-# 1. multipart 開始 + 全パートpresigned URL発行
 curl -sS -X POST http://localhost:8080/v1/uploads \
   -H 'Content-Type: application/json' \
   -d '{
@@ -65,7 +66,6 @@ curl -sS -X POST http://localhost:8080/v1/uploads \
     "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   }'
 
-# 2. クライアント側で各URLにPUTした後、complete を呼ぶ
 curl -sS -X POST http://localhost:8080/v1/uploads/{upload_session_id}/complete \
   -H 'Content-Type: application/json' \
   -d '{
@@ -73,18 +73,36 @@ curl -sS -X POST http://localhost:8080/v1/uploads/{upload_session_id}/complete \
   }'
 ```
 
-## アップロード仕様（今回PR時点）
+### shipments
 
-- `POST /v1/uploads`
-  - upload_session を DB に保存
-  - S3 multipart upload を開始
-  - 必要パート分の presigned URL を **1回で返却**
-  - バリデーション（`file_name` 必須, `file_size > 0`, 10GB上限, content_type簡易チェック）
-- `POST /v1/uploads/{id}/complete`
-  - upload_session の status 検証
-  - S3 complete multipart upload 実行
-  - files レコード作成 + upload_session.completed 反映（トランザクション）
-  - 二重完了は 409 を返却
+```bash
+# URL共有型（url_shared）
+curl -sS -X POST http://localhost:8080/v1/shipments \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "shipment_id":"{uploadsで作成されたshipment_id}",
+    "file_ids":["{file_id}"],
+    "subject":"4月請求書",
+    "message":"添付をご確認ください",
+    "share_mode":"url_shared",
+    "max_download_count":10,
+    "expires_at":"2026-04-11T00:00:00Z",
+    "password":"passw0rd123"
+  }'
+
+# 受信者限定共有（recipient_restricted）
+curl -sS -X POST http://localhost:8080/v1/shipments \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "shipment_id":"{uploadsで作成されたshipment_id}",
+    "file_ids":["{file_id}"],
+    "subject":"契約書",
+    "share_mode":"recipient_restricted",
+    "recipients":[{"email":"a@example.com"},{"email":"b@example.com"}]
+  }'
+
+curl -sS http://localhost:8080/v1/shipments/{shipment_id}
+```
 
 ## 開発用コマンド
 
@@ -95,9 +113,23 @@ make sqlc-generate
 make migrate-down
 ```
 
+## shipments仕様（今回PR時点）
+
+- `POST /v1/shipments`
+  - `file_ids` を必須化し、アップロード済みファイル（`upload_status=completed`）のみ shipment 化
+  - `share_mode=url_shared | recipient_restricted` をサポート
+  - recipient_restricted の場合のみ recipients を作成（メール正規化 + 重複除外）
+  - access token を DB 保持型で作成（生トークンは `url_shared` のみレスポンス返却）
+  - パスワード指定時は bcrypt で `password_hash` を保存（平文保存禁止）
+  - 送信確定時に shipment status を `sent` へ遷移
+- `GET /v1/shipments/{id}`
+  - shipment, files, recipients を返却
+  - token の生値・hash は返却しない
+
 ## 補足（仮置き / 未実装）
 
-- 仮置き: shipment 未作成状態でも uploads を先行させるため、`POST /v1/uploads` で匿名 draft shipment を自動作成します。
-- 仮置き: presigned URL 一括返却の上限として、パート数を1000に制限しています（巨大レスポンス回避）。
-- 未実装: shipment 作成本実装、recipient、access token、download-url、SES/SQS worker 連携、virus scan、認証本実装。
+- 仮置き: `POST /v1/uploads` は shipment 未指定時に匿名 draft shipment を自動作成します。
+- 仮置き: `POST /v1/shipments` の `access_url` は `https://app.example.com/r/{token}` 固定です。
+- 仮置き: `share_mode=public_link` は互換入力として受け付け、内部では `url_shared` に正規化します。
+- 未実装: access token verify API、download-url API、SES/SQS worker、認証本実装、virus scan。
 - TODO: 現在の store は hand-rolled 実装です。次PRで sqlc generated code に置き換える予定です。

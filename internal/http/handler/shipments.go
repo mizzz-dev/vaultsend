@@ -2,28 +2,34 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/example/vaultsend/internal/http/render"
-	"github.com/example/vaultsend/internal/store"
+	"github.com/example/vaultsend/internal/service"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
 type ShipmentHandler struct {
-	Queries *store.Queries
+	Service *service.ShipmentService
 }
 
 type CreateShipmentRequest struct {
-	ShipmentID      uuid.UUID `json:"shipment_id"`
-	Title           string    `json:"title"`
-	Message         string    `json:"message"`
-	ShareMode       string    `json:"share_mode"`
-	RecipientEmails []string  `json:"recipient_emails"`
-	ExpiresInDays   int       `json:"expires_in_days"`
-	MaxDownloads    int32     `json:"max_downloads"`
+	ShipmentID  *uuid.UUID  `json:"shipment_id"`
+	FileIDs     []uuid.UUID `json:"file_ids"`
+	OwnerUserID *uuid.UUID  `json:"owner_user_id"`
+	Subject     string      `json:"subject"`
+	Message     *string     `json:"message"`
+	ShareMode   string      `json:"share_mode"`
+	Recipients  []struct {
+		Email string `json:"email"`
+	} `json:"recipients"`
+	ExpiresAt        *string `json:"expires_at"`
+	MaxDownloadCount *int32  `json:"max_download_count"`
+	Password         *string `json:"password"`
 }
 
 func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) {
@@ -33,20 +39,38 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// TODO: 次PRで ready 状態検証、recipients 登録、SQS通知投入をトランザクションで実装する。
-	shipment, err := h.Queries.GetShipment(r.Context(), req.ShipmentID)
-	if err != nil {
-		render.Error(w, http.StatusNotFound, "shipment_not_found", "shipment が見つかりません", chimw.GetReqID(r.Context()))
-		return
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		parsed, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			render.Error(w, http.StatusBadRequest, "invalid_expires_at", "expires_at は RFC3339 形式で指定してください", chimw.GetReqID(r.Context()))
+			return
+		}
+		expiresAt = &parsed
 	}
 
-	// 仮置き: sentへの状態更新は未実装。レスポンス形のみ先行で固定。
-	render.JSON(w, http.StatusCreated, map[string]any{
-		"id":         shipment.ID,
-		"status":     "sent",
-		"access_url": "https://app.example.com/r/TODO_TOKEN",
-		"expires_at": time.Now().UTC().AddDate(0, 0, 7),
+	recipients := make([]service.ShipmentRecipientInput, 0, len(req.Recipients))
+	for _, rc := range req.Recipients {
+		recipients = append(recipients, service.ShipmentRecipientInput{Email: rc.Email})
+	}
+
+	out, err := h.Service.CreateShipment(r.Context(), service.CreateShipmentInput{
+		ShipmentID:       req.ShipmentID,
+		FileIDs:          req.FileIDs,
+		OwnerUserID:      req.OwnerUserID,
+		Subject:          req.Subject,
+		Message:          req.Message,
+		ShareMode:        req.ShareMode,
+		Recipients:       recipients,
+		ExpiresAt:        expiresAt,
+		MaxDownloadCount: req.MaxDownloadCount,
+		Password:         req.Password,
 	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusCreated, out)
 }
 
 func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
@@ -57,17 +81,19 @@ func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shipment, err := h.Queries.GetShipment(r.Context(), id)
+	out, err := h.Service.GetShipmentDetail(r.Context(), id)
 	if err != nil {
-		render.Error(w, http.StatusNotFound, "not_found", "shipment が見つかりません", chimw.GetReqID(r.Context()))
+		h.writeServiceError(w, r, err)
 		return
 	}
+	render.JSON(w, http.StatusOK, out)
+}
 
-	// TODO: 次PRで files / recipients をjoinして詳細レスポンスを返却する。
-	render.JSON(w, http.StatusOK, map[string]any{
-		"id":         shipment.ID,
-		"status":     shipment.Status,
-		"files":      []any{},
-		"recipients": []any{},
-	})
+func (h ShipmentHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
+	var apiErr *service.APIError
+	if errors.As(err, &apiErr) {
+		render.Error(w, apiErr.Status, apiErr.Code, apiErr.Message, chimw.GetReqID(r.Context()))
+		return
+	}
+	render.Error(w, http.StatusInternalServerError, "internal_error", "内部エラーが発生しました", chimw.GetReqID(r.Context()))
 }
