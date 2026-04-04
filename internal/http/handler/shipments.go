@@ -35,6 +35,10 @@ type CreateShipmentRequest struct {
 	Password         *string `json:"password"`
 }
 
+type ResendShipmentRequest struct {
+	RecipientIDs []uuid.UUID `json:"recipient_ids"`
+}
+
 func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) {
 	var req CreateShipmentRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -168,6 +172,39 @@ func (h ShipmentHandler) DeleteShipment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	render.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h ShipmentHandler) ResendShipment(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_shipment_id", "shipment id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+
+	var req ResendShipmentRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
+			return
+		}
+	}
+
+	out, err := h.Service.ResendShipmentNotification(r.Context(), service.ResendShipmentInput{
+		OwnerUserID:  user.ID,
+		ShipmentID:   id,
+		RecipientIDs: req.RecipientIDs,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
 }
 
 func (h ShipmentHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {

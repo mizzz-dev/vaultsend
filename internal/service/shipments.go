@@ -36,6 +36,9 @@ type ShipmentStore interface {
 	FinalizeShipment(ctx context.Context, arg store.FinalizeShipmentParams) (store.ShipmentFinalizeResult, error)
 	GetFilesByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.File, error)
 	GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.Recipient, error)
+	ListRecipientsByIDsAndShipmentID(ctx context.Context, shipmentID uuid.UUID, recipientIDs []uuid.UUID) ([]store.Recipient, error)
+	CreateAccessToken(ctx context.Context, shipmentID uuid.UUID, arg store.CreateAccessTokenParams) error
+	CreateNotificationEvent(ctx context.Context, arg store.CreateNotificationEventParams) (store.NotificationEvent, error)
 	ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error)
 	CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
 	GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error)
@@ -137,14 +140,27 @@ func (s *ShipmentService) CreateShipment(ctx context.Context, in CreateShipmentI
 			if !ok || rawToken == "" {
 				continue
 			}
-			event := queue.MailNotification{
+			queuedAt := time.Now().UTC()
+			notificationEvent, createErr := s.Store.CreateNotificationEvent(ctx, store.CreateNotificationEventParams{
 				ShipmentID:  result.Shipment.ID,
 				RecipientID: recipient.ID,
-				Email:       recipient.Email,
-				Token:       rawToken,
-				Subject:     result.Shipment.Title,
-				Message:     result.Shipment.Message,
-				ExpiresAt:   &result.Shipment.ExpiresAt,
+				EventType:   "initial_send",
+				Status:      "queued",
+				QueuedAt:    &queuedAt,
+			})
+			if createErr != nil {
+				return CreateShipmentOutput{}, fmt.Errorf("create initial notification event: %w", createErr)
+			}
+			event := queue.MailNotification{
+				ShipmentID:        result.Shipment.ID,
+				RecipientID:       recipient.ID,
+				NotificationEvent: &notificationEvent.ID,
+				NotificationType:  "initial_send",
+				Email:             recipient.Email,
+				Token:             rawToken,
+				Subject:           result.Shipment.Title,
+				Message:           result.Shipment.Message,
+				ExpiresAt:         &result.Shipment.ExpiresAt,
 			}
 			if err := s.Queue.EnqueueMail(ctx, event); err != nil {
 				// TODO: outboxテーブル導入後は非同期再送で補償する。

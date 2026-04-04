@@ -292,6 +292,19 @@ type RecipientDownloadStat struct {
 	LastDownloadAt *time.Time
 }
 
+type NotificationEvent struct {
+	ID           int64
+	ShipmentID   uuid.UUID
+	RecipientID  uuid.UUID
+	EventType    string
+	Status       string
+	ErrorMessage *string
+	CreatedAt    time.Time
+	QueuedAt     *time.Time
+	SentAt       *time.Time
+	FailedAt     *time.Time
+}
+
 func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
 	return q.createFile(ctx, q.db, arg)
 }
@@ -434,6 +447,79 @@ func (q *Queries) GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid
 	return recipients, rows.Err()
 }
 
+func (q *Queries) ListRecipientsByIDsAndShipmentID(ctx context.Context, shipmentID uuid.UUID, recipientIDs []uuid.UUID) ([]Recipient, error) {
+	const query = `SELECT id, shipment_id, email, email_normalized, status, created_at, updated_at FROM recipients WHERE shipment_id=$1 AND id = ANY($2::uuid[]) ORDER BY created_at ASC`
+	rows, err := q.db.Query(ctx, query, shipmentID, recipientIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]Recipient, 0, len(recipientIDs))
+	for rows.Next() {
+		var r Recipient
+		if err := rows.Scan(&r.ID, &r.ShipmentID, &r.Email, &r.EmailNormalized, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+type CreateNotificationEventParams struct {
+	ShipmentID  uuid.UUID
+	RecipientID uuid.UUID
+	EventType   string
+	Status      string
+	QueuedAt    *time.Time
+}
+
+func (q *Queries) CreateNotificationEvent(ctx context.Context, arg CreateNotificationEventParams) (NotificationEvent, error) {
+	const query = `
+INSERT INTO notification_events (shipment_id, recipient_id, event_type, status, queued_at)
+VALUES ($1,$2,$3,$4,$5)
+RETURNING id, shipment_id, recipient_id, event_type, status, error_message, created_at, queued_at, sent_at, failed_at`
+	var ev NotificationEvent
+	err := q.db.QueryRow(ctx, query, arg.ShipmentID, arg.RecipientID, arg.EventType, arg.Status, arg.QueuedAt).Scan(
+		&ev.ID,
+		&ev.ShipmentID,
+		&ev.RecipientID,
+		&ev.EventType,
+		&ev.Status,
+		&ev.ErrorMessage,
+		&ev.CreatedAt,
+		&ev.QueuedAt,
+		&ev.SentAt,
+		&ev.FailedAt,
+	)
+	return ev, err
+}
+
+type UpdateNotificationEventStatusParams struct {
+	EventID      int64
+	Status       string
+	ErrorMessage *string
+	SentAt       *time.Time
+	FailedAt     *time.Time
+}
+
+func (q *Queries) UpdateNotificationEventStatus(ctx context.Context, arg UpdateNotificationEventStatusParams) error {
+	const query = `
+UPDATE notification_events
+SET status = $2,
+    error_message = $3,
+    sent_at = COALESCE($4, sent_at),
+    failed_at = COALESCE($5, failed_at)
+WHERE id = $1`
+	cmd, err := q.db.Exec(ctx, query, arg.EventID, arg.Status, arg.ErrorMessage, arg.SentAt, arg.FailedAt)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (q *Queries) createRecipients(ctx context.Context, db dbtx, shipmentID uuid.UUID, recipients []CreateRecipientParams) ([]Recipient, error) {
 	result := make([]Recipient, 0, len(recipients))
 	const query = `
@@ -478,6 +564,10 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)`
 		}
 	}
 	return nil
+}
+
+func (q *Queries) CreateAccessToken(ctx context.Context, shipmentID uuid.UUID, arg CreateAccessTokenParams) error {
+	return q.createAccessTokens(ctx, q.db, shipmentID, []CreateAccessTokenParams{arg})
 }
 
 func (q *Queries) GetAccessTokenByHash(ctx context.Context, tokenHash string) (AccessToken, error) {

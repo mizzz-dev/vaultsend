@@ -260,9 +260,44 @@ make migrate-down
 - `GET /v1/shipments`
   - ログインユーザーの shipment 一覧を返却（`limit`, `offset` ページネーション）
   - `download_count`, `max_download_count`, `file_count` を含む
+- `POST /v1/shipments/{id}/resend`
+  - ログインユーザー本人の `recipient_restricted` shipment の通知メールを再送
+  - `recipient_ids` 未指定時は全 recipient を再送対象にする
+  - `recipient_ids` 指定時は shipment に属する recipient のみ許可
+  - 再送不可条件: owner不一致 / `url_shared` / deleted / revoked / expired / 不正status
+  - レスポンス: `shipment_id`, `resent_recipient_count`, `skipped_recipient_count`, `skipped_reasons`, `queued_at`
 - `DELETE /v1/shipments/{id}`
   - ログインユーザー本人の shipment のみ論理削除（`status=deleted`）
   - 関連する access token を revoke し、以後ダウンロード不可
+
+### 再送API request / response 例
+
+```bash
+curl -sS -X POST http://localhost:8080/v1/shipments/{shipment_id}/resend \
+  -H 'Content-Type: application/json' \
+  -b /tmp/vs-cookie.txt \
+  -d '{
+    "recipient_ids": ["{recipient_id_1}"]
+  }'
+```
+
+```json
+{
+  "shipment_id": "d5a79053-a2fa-4b57-aeb0-83af5dc25728",
+  "resent_recipient_count": 1,
+  "skipped_recipient_count": 0,
+  "skipped_reasons": [],
+  "queued_at": "2026-04-04T08:10:00Z"
+}
+```
+
+### notification_events（今回追加）
+
+- 送信通知の enqueue 履歴を `notification_events` に記録します。
+- `event_type`: `initial_send` / `resend`
+- `status`: `queued` / `sent` / `failed`
+- API側で enqueue 前に `queued` を記録し、worker側で送信結果に応じて `sent_at` / `failed_at` を更新します。
+- 仮置き: 失敗時の再試行制御は SQS retry に委譲（独自の再送回数制御は未実装）。
 
 ### 送信履歴APIレスポンス例（抜粋）
 

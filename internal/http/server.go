@@ -40,6 +40,7 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 			r.Use(appmw.RequireAuth(authSvc))
 			r.Get("/shipments", shipmentHandler.ListShipments)
 			r.Get("/shipments/{id}", shipmentHandler.GetShipment)
+			r.Post("/shipments/{id}/resend", shipmentHandler.ResendShipment)
 			r.Delete("/shipments/{id}", shipmentHandler.DeleteShipment)
 		})
 		r.Get("/access/{token}", accessHandler.InspectAccess)

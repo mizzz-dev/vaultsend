@@ -24,6 +24,8 @@ type fakeShipmentStore struct {
 	deleteErr     error
 	revokeErr     error
 	recipientStat []store.RecipientDownloadStat
+	eventCreates  []store.CreateNotificationEventParams
+	tokenCreates  []store.CreateAccessTokenParams
 }
 
 type fakeMailQueue struct {
@@ -67,6 +69,27 @@ func (f *fakeShipmentStore) GetFilesByShipmentID(ctx context.Context, shipmentID
 
 func (f *fakeShipmentStore) GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.Recipient, error) {
 	return f.recipientsOut, nil
+}
+func (f *fakeShipmentStore) ListRecipientsByIDsAndShipmentID(ctx context.Context, shipmentID uuid.UUID, recipientIDs []uuid.UUID) ([]store.Recipient, error) {
+	idSet := map[uuid.UUID]struct{}{}
+	for _, id := range recipientIDs {
+		idSet[id] = struct{}{}
+	}
+	out := make([]store.Recipient, 0, len(recipientIDs))
+	for _, rc := range f.recipientsOut {
+		if _, ok := idSet[rc.ID]; ok {
+			out = append(out, rc)
+		}
+	}
+	return out, nil
+}
+func (f *fakeShipmentStore) CreateAccessToken(ctx context.Context, shipmentID uuid.UUID, arg store.CreateAccessTokenParams) error {
+	f.tokenCreates = append(f.tokenCreates, arg)
+	return nil
+}
+func (f *fakeShipmentStore) CreateNotificationEvent(ctx context.Context, arg store.CreateNotificationEventParams) (store.NotificationEvent, error) {
+	f.eventCreates = append(f.eventCreates, arg)
+	return store.NotificationEvent{ID: int64(len(f.eventCreates)), ShipmentID: arg.ShipmentID, RecipientID: arg.RecipientID, EventType: arg.EventType, Status: arg.Status}, nil
 }
 func (f *fakeShipmentStore) ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error) {
 	return f.listOut, nil
@@ -126,6 +149,9 @@ func TestCreateShipment_RecipientRestricted_Success(t *testing.T) {
 	}
 	if len(queueMock.events) != 1 {
 		t.Fatalf("expected enqueue once got=%d", len(queueMock.events))
+	}
+	if len(fs.eventCreates) != 1 || fs.eventCreates[0].EventType != "initial_send" {
+		t.Fatalf("expected initial_send event create got=%+v", fs.eventCreates)
 	}
 	if queueMock.events[0].RecipientID != recipientID {
 		t.Fatalf("unexpected recipient id: %s", queueMock.events[0].RecipientID)
@@ -228,3 +254,57 @@ func TestDeleteShipmentByUser_Success(t *testing.T) {
 		t.Fatalf("unexpected err: %v", err)
 	}
 }
+
+func TestResendShipmentNotification_Success(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	recipientID := uuid.New()
+	fs := &fakeShipmentStore{
+		shipment:      store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "sent", Title: "件名", ExpiresAt: time.Now().UTC().Add(24 * time.Hour)},
+		recipientsOut: []store.Recipient{{ID: recipientID, ShipmentID: shipID, Email: "a@example.com"}},
+	}
+	queueMock := &fakeMailQueue{}
+	svc := &ShipmentService{Store: fs, Queue: queueMock}
+	out, err := svc.ResendShipmentNotification(context.Background(), ResendShipmentInput{OwnerUserID: ownerID, ShipmentID: shipID})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.ResentRecipientCount != 1 || len(queueMock.events) != 1 {
+		t.Fatalf("unexpected output=%+v queued=%d", out, len(queueMock.events))
+	}
+	if len(fs.eventCreates) != 1 || fs.eventCreates[0].EventType != "resend" {
+		t.Fatalf("expected resend event create got=%+v", fs.eventCreates)
+	}
+	if len(fs.tokenCreates) != 1 || fs.tokenCreates[0].RecipientID == nil || *fs.tokenCreates[0].RecipientID != recipientID {
+		t.Fatalf("expected token create for recipient got=%+v", fs.tokenCreates)
+	}
+}
+
+func TestResendShipmentNotification_ForbidOrConflict(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	cases := []struct {
+		name     string
+		shipment store.Shipment
+		userID   uuid.UUID
+		status   int
+	}{
+		{name: "owner mismatch", shipment: store.Shipment{ID: shipID, OwnerUserID: ptrUUID(uuid.New()), ShareMode: "recipient_restricted", Status: "sent", ExpiresAt: time.Now().UTC().Add(24 * time.Hour)}, userID: ownerID, status: 403},
+		{name: "url_shared", shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "url_shared", Status: "sent", ExpiresAt: time.Now().UTC().Add(24 * time.Hour)}, userID: ownerID, status: 409},
+		{name: "expired", shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "sent", ExpiresAt: time.Now().UTC().Add(-1 * time.Hour)}, userID: ownerID, status: 409},
+		{name: "deleted", shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "deleted", ExpiresAt: time.Now().UTC().Add(24 * time.Hour), DeletedAt: ptrTime(time.Now().UTC())}, userID: ownerID, status: 409},
+		{name: "revoked", shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "revoked", ExpiresAt: time.Now().UTC().Add(24 * time.Hour), RevokedAt: ptrTime(time.Now().UTC())}, userID: ownerID, status: 409},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &ShipmentService{Store: &fakeShipmentStore{shipment: tc.shipment}, Queue: &fakeMailQueue{}}
+			_, err := svc.ResendShipmentNotification(context.Background(), ResendShipmentInput{OwnerUserID: tc.userID, ShipmentID: shipID})
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Status != tc.status {
+				t.Fatalf("expected status=%d err=%v", tc.status, err)
+			}
+		})
+	}
+}
+
+func ptrUUID(id uuid.UUID) *uuid.UUID { return &id }

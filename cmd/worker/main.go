@@ -12,7 +12,9 @@ import (
 	"github.com/example/vaultsend/internal/config"
 	"github.com/example/vaultsend/internal/mail"
 	"github.com/example/vaultsend/internal/queue"
+	"github.com/example/vaultsend/internal/store"
 	"github.com/example/vaultsend/internal/worker"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -28,6 +30,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load aws config: %v", err)
 	}
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("failed to connect database: %v", err)
+	}
+	defer pool.Close()
+	queries := store.New(pool)
 
 	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
 	sesMailer := mail.NewSESMailer(sesv2.NewFromConfig(awsCfg), cfg.SESFromEmail)
@@ -35,6 +43,7 @@ func main() {
 	w := &worker.MailWorker{
 		Queue:       mailQueue,
 		Mailer:      sesMailer,
+		EventStore:  queries,
 		FrontendURL: cfg.FrontendURL,
 		MaxMessages: 5,
 		WaitSeconds: 20,
