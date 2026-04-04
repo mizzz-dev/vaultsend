@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -54,7 +53,7 @@ func (h AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.Service.Register(r.Context(), service.RegisterInput{Email: req.Email, Password: req.Password, DisplayName: req.DisplayName})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	h.setSessionCookie(w, out.SessionToken, out.ExpiresAt)
@@ -73,7 +72,7 @@ func (h AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.Service.Login(r.Context(), service.LoginInput{Email: req.Email, Password: req.Password, UserAgent: readUserAgent(r), IPHash: readIPHash(r)})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	h.setSessionCookie(w, out.SessionToken, out.ExpiresAt)
@@ -87,7 +86,7 @@ func (h AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Service.Logout(r.Context(), cookie.Value); err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	h.clearSessionCookie(w)
@@ -135,15 +134,6 @@ func (h AuthHandler) cookieSameSite() http.SameSite {
 		return http.SameSiteLaxMode
 	}
 	return h.CookieSameSite
-}
-
-func (h AuthHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	var apiErr *service.APIError
-	if errors.As(err, &apiErr) {
-		render.Error(w, apiErr.Status, apiErr.Code, apiErr.Message, chimw.GetReqID(r.Context()))
-		return
-	}
-	render.Error(w, http.StatusInternalServerError, "internal_error", "内部エラーが発生しました", chimw.GetReqID(r.Context()))
 }
 
 func readUserAgent(r *http.Request) *string {

@@ -21,9 +21,13 @@ const (
 )
 
 type APIError struct {
-	Status  int
-	Code    string
-	Message string
+	Status          int
+	Error           string
+	Code            string
+	Message         string
+	UpgradeRequired bool
+	UpgradeURL      string
+	RecommendedPlan string
 }
 
 func (e *APIError) Error() string { return e.Code + ": " + e.Message }

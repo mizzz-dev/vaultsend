@@ -265,6 +265,21 @@ make migrate-down
 - Webhook
   - `POST /v1/billing/webhook` で `customer.subscription.created|updated|deleted` を受け取り、
     `subscriptions` テーブルへ反映します。
+
+- プラン情報API
+  - `GET /v1/billing/plan`（ログイン必須）
+  - レスポンス:
+    - `plan`: `free|pro`
+    - `limits.max_file_size` / `limits.max_storage_days` / `limits.monthly_shipment_limit`
+    - `usage.current_month_shipments` / `usage.current_storage_bytes`
+    - `remaining.remaining_shipments`
+- 制限エラー（plan_limit系）共通フォーマット
+  - `error`: `plan_limit_exceeded`
+  - `code`: `FILE_SIZE_LIMIT | STORAGE_DAYS_LIMIT | MONTHLY_SHIPMENT_LIMIT`
+  - `message`: ユーザー向け説明
+  - `upgrade_required`: `true`
+  - `upgrade_url`: `/settings/billing`
+  - `recommended_plan`: `pro`
 - 制限適用
   - upload 作成時にプランの `max_file_size` を検証
   - shipment 確定時に保存期間と月間作成数を検証

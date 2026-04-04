@@ -60,7 +60,11 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 				r.Get("/me", authHandler.Me)
 			})
 		})
-		r.Post("/billing/checkout", billingHandler.CreateCheckout)
+		r.Group(func(r chi.Router) {
+			r.Use(appmw.RequireAuth(authSvc))
+			r.Get("/billing/plan", billingHandler.GetPlan)
+			r.Post("/billing/checkout", billingHandler.CreateCheckout)
+		})
 		r.Post("/billing/webhook", billingHandler.Webhook)
 	})
 

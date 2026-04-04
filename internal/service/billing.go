@@ -17,10 +17,24 @@ const (
 	PlanPro  = "pro"
 )
 
+const (
+	PlanLimitErrorType = "plan_limit_exceeded"
+	RecommendedPlanPro = "pro"
+)
+
 type PlanLimits struct {
-	MaxFileSizeBytes     int64
-	MaxRetentionDays     int
-	MonthlyShipmentLimit int64
+	MaxFileSizeBytes     int64 `json:"max_file_size"`
+	MaxRetentionDays     int   `json:"max_storage_days"`
+	MonthlyShipmentLimit int64 `json:"monthly_shipment_limit"`
+}
+
+type PlanUsage struct {
+	CurrentMonthShipments int64 `json:"current_month_shipments"`
+	CurrentStorageBytes   int64 `json:"current_storage_bytes"`
+}
+
+type RemainingQuota struct {
+	RemainingShipments *int64 `json:"remaining_shipments,omitempty"`
 }
 
 type UserPlan struct {
@@ -29,11 +43,20 @@ type UserPlan struct {
 	Limits PlanLimits `json:"limits"`
 }
 
+type PlanDetails struct {
+	Plan      string         `json:"plan"`
+	Status    string         `json:"status"`
+	Limits    PlanLimits     `json:"limits"`
+	Usage     PlanUsage      `json:"usage"`
+	Remaining RemainingQuota `json:"remaining"`
+}
+
 type BillingStore interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (store.User, error)
 	GetLatestSubscriptionByUserID(ctx context.Context, userID uuid.UUID) (store.Subscription, error)
 	UpsertSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error)
 	CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error)
+	SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
 }
 
 type CheckoutSession struct {
@@ -161,13 +184,52 @@ func (s *BillingService) GetUserPlan(ctx context.Context, userID *uuid.UUID) (Us
 	return UserPlan{Name: PlanFree, Status: sub.Status, Limits: limitsForPlan(PlanFree)}, nil
 }
 
+func (s *BillingService) GetUsage(ctx context.Context, userID *uuid.UUID) (PlanUsage, error) {
+	if userID == nil {
+		return PlanUsage{}, nil
+	}
+	since := time.Now().UTC().AddDate(0, 0, -30)
+	count, err := s.Store.CountShipmentsByUserSince(ctx, *userID, since)
+	if err != nil {
+		return PlanUsage{}, fmt.Errorf("count shipments: %w", err)
+	}
+	storageBytes, err := s.Store.SumStorageBytesByUser(ctx, *userID)
+	if err != nil {
+		return PlanUsage{}, fmt.Errorf("sum storage bytes: %w", err)
+	}
+	return PlanUsage{CurrentMonthShipments: count, CurrentStorageBytes: storageBytes}, nil
+}
+
+func (s *BillingService) GetRemainingQuota(plan UserPlan, usage PlanUsage) RemainingQuota {
+	if plan.Limits.MonthlyShipmentLimit <= 0 {
+		return RemainingQuota{}
+	}
+	remaining := plan.Limits.MonthlyShipmentLimit - usage.CurrentMonthShipments
+	if remaining < 0 {
+		remaining = 0
+	}
+	return RemainingQuota{RemainingShipments: &remaining}
+}
+
+func (s *BillingService) GetPlanDetails(ctx context.Context, userID *uuid.UUID) (PlanDetails, error) {
+	plan, err := s.GetUserPlan(ctx, userID)
+	if err != nil {
+		return PlanDetails{}, err
+	}
+	usage, err := s.GetUsage(ctx, userID)
+	if err != nil {
+		return PlanDetails{}, err
+	}
+	return PlanDetails{Plan: plan.Name, Status: plan.Status, Limits: plan.Limits, Usage: usage, Remaining: s.GetRemainingQuota(plan, usage)}, nil
+}
+
 func (s *BillingService) EnforceUploadLimit(ctx context.Context, userID *uuid.UUID, fileSize int64) error {
 	plan, err := s.GetUserPlan(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if fileSize > plan.Limits.MaxFileSizeBytes {
-		return &APIError{Status: 400, Code: "file_size_exceeded", Message: "現在のプラン上限を超えています"}
+		return newPlanLimitError("FILE_SIZE_LIMIT", "無料プランでは1GBまでです")
 	}
 	return nil
 }
@@ -179,16 +241,15 @@ func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID *uuid.
 	}
 	maxExpiry := time.Now().UTC().AddDate(0, 0, plan.Limits.MaxRetentionDays)
 	if expiresAt.After(maxExpiry) {
-		return &APIError{Status: 400, Code: "invalid_expires_at", Message: "現在のプランで設定可能な保存期間を超えています"}
+		return newPlanLimitError("STORAGE_DAYS_LIMIT", "現在のプランで設定可能な保存期間を超えています")
 	}
 	if userID != nil && plan.Limits.MonthlyShipmentLimit > 0 {
-		since := time.Now().UTC().AddDate(0, 0, -30)
-		count, err := s.Store.CountShipmentsByUserSince(ctx, *userID, since)
+		usage, err := s.GetUsage(ctx, userID)
 		if err != nil {
-			return fmt.Errorf("count shipments: %w", err)
+			return err
 		}
-		if count >= plan.Limits.MonthlyShipmentLimit {
-			return &APIError{Status: 403, Code: "monthly_shipment_limit_exceeded", Message: "月間送信数の上限に達しました"}
+		if usage.CurrentMonthShipments >= plan.Limits.MonthlyShipmentLimit {
+			return newPlanLimitError("MONTHLY_SHIPMENT_LIMIT", "月間送信数の上限に達しました")
 		}
 	}
 	return nil
@@ -223,4 +284,16 @@ func ptrOrNil(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func newPlanLimitError(code, message string) *APIError {
+	return &APIError{
+		Status:          403,
+		Error:           PlanLimitErrorType,
+		Code:            code,
+		Message:         message,
+		UpgradeRequired: true,
+		UpgradeURL:      "/settings/billing",
+		RecommendedPlan: RecommendedPlanPro,
+	}
 }
