@@ -286,10 +286,25 @@ type ShipmentListItem struct {
 }
 
 type RecipientDownloadStat struct {
-	RecipientID    uuid.UUID
-	Email          string
-	DownloadCount  int32
-	LastDownloadAt *time.Time
+	RecipientID     uuid.UUID
+	Email           string
+	DownloadCount   int32
+	FirstDownloadAt *time.Time
+	LastDownloadAt  *time.Time
+}
+
+type RecipientNotificationStat struct {
+	RecipientID            uuid.UUID
+	Email                  string
+	NotificationCount      int32
+	LastNotificationStatus *string
+	LastNotificationType   *string
+	LastNotificationAt     *time.Time
+}
+
+type NotificationEventListItem struct {
+	NotificationEvent
+	RecipientEmail string
 }
 
 type NotificationEvent struct {
@@ -599,6 +614,84 @@ func (q *Queries) CountDownloadEventsByShipment(ctx context.Context, shipmentID 
 	return count, nil
 }
 
+func (q *Queries) CountNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) (int64, error) {
+	const query = `SELECT COUNT(1) FROM notification_events WHERE shipment_id = $1`
+	var count int64
+	if err := q.db.QueryRow(ctx, query, shipmentID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (q *Queries) GetNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]NotificationEvent, error) {
+	const query = `
+SELECT id, shipment_id, recipient_id, event_type, status, error_message, created_at, queued_at, sent_at, failed_at
+FROM notification_events
+WHERE shipment_id = $1
+ORDER BY created_at DESC, id DESC`
+	rows, err := q.db.Query(ctx, query, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]NotificationEvent, 0)
+	for rows.Next() {
+		var ev NotificationEvent
+		if err := rows.Scan(
+			&ev.ID,
+			&ev.ShipmentID,
+			&ev.RecipientID,
+			&ev.EventType,
+			&ev.Status,
+			&ev.ErrorMessage,
+			&ev.CreatedAt,
+			&ev.QueuedAt,
+			&ev.SentAt,
+			&ev.FailedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, ev)
+	}
+	return items, rows.Err()
+}
+
+func (q *Queries) ListNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID, limit int32, offset int32) ([]NotificationEventListItem, error) {
+	const query = `
+SELECT ne.id, ne.shipment_id, ne.recipient_id, ne.event_type, ne.status, ne.error_message, ne.created_at, ne.queued_at, ne.sent_at, ne.failed_at, r.email
+FROM notification_events ne
+INNER JOIN recipients r ON r.id = ne.recipient_id
+WHERE ne.shipment_id = $1
+ORDER BY ne.created_at DESC, ne.id DESC
+LIMIT $2 OFFSET $3`
+	rows, err := q.db.Query(ctx, query, shipmentID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]NotificationEventListItem, 0, limit)
+	for rows.Next() {
+		var ev NotificationEventListItem
+		if err := rows.Scan(
+			&ev.ID,
+			&ev.ShipmentID,
+			&ev.RecipientID,
+			&ev.EventType,
+			&ev.Status,
+			&ev.ErrorMessage,
+			&ev.CreatedAt,
+			&ev.QueuedAt,
+			&ev.SentAt,
+			&ev.FailedAt,
+			&ev.RecipientEmail,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, ev)
+	}
+	return items, rows.Err()
+}
+
 func (q *Queries) ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]ShipmentListItem, error) {
 	const query = `
 SELECT
@@ -663,6 +756,7 @@ SELECT
     r.id,
     r.email,
     COUNT(de.id) FILTER (WHERE de.result = 'success')::int4 AS download_count,
+    MIN(de.created_at) FILTER (WHERE de.result = 'success') AS first_download_at,
     MAX(de.created_at) FILTER (WHERE de.result = 'success') AS last_download_at
 FROM recipients r
 LEFT JOIN download_events de ON de.recipient_id = r.id
@@ -677,7 +771,56 @@ ORDER BY r.created_at ASC`
 	stats := make([]RecipientDownloadStat, 0)
 	for rows.Next() {
 		var item RecipientDownloadStat
-		if err := rows.Scan(&item.RecipientID, &item.Email, &item.DownloadCount, &item.LastDownloadAt); err != nil {
+		if err := rows.Scan(&item.RecipientID, &item.Email, &item.DownloadCount, &item.FirstDownloadAt, &item.LastDownloadAt); err != nil {
+			return nil, err
+		}
+		stats = append(stats, item)
+	}
+	return stats, rows.Err()
+}
+
+func (q *Queries) GetRecipientNotificationStatsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]RecipientNotificationStat, error) {
+	const query = `
+SELECT
+	r.id,
+	r.email,
+	COUNT(ne.id)::int4 AS notification_count,
+	(
+		SELECT ne2.status
+		FROM notification_events ne2
+		WHERE ne2.recipient_id = r.id
+		ORDER BY ne2.created_at DESC, ne2.id DESC
+		LIMIT 1
+	) AS last_notification_status,
+	(
+		SELECT ne2.event_type
+		FROM notification_events ne2
+		WHERE ne2.recipient_id = r.id
+		ORDER BY ne2.created_at DESC, ne2.id DESC
+		LIMIT 1
+	) AS last_notification_type,
+	MAX(ne.created_at) AS last_notification_at
+FROM recipients r
+LEFT JOIN notification_events ne ON ne.recipient_id = r.id
+WHERE r.shipment_id = $1
+GROUP BY r.id
+ORDER BY r.created_at ASC`
+	rows, err := q.db.Query(ctx, query, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := make([]RecipientNotificationStat, 0)
+	for rows.Next() {
+		var item RecipientNotificationStat
+		if err := rows.Scan(
+			&item.RecipientID,
+			&item.Email,
+			&item.NotificationCount,
+			&item.LastNotificationStatus,
+			&item.LastNotificationType,
+			&item.LastNotificationAt,
+		); err != nil {
 			return nil, err
 		}
 		stats = append(stats, item)

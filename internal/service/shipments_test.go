@@ -12,20 +12,24 @@ import (
 )
 
 type fakeShipmentStore struct {
-	shipment      store.Shipment
-	filesByIDs    []store.FileWithShipment
-	finalizeOut   store.ShipmentFinalizeResult
-	finalizeArg   store.FinalizeShipmentParams
-	finalizeErr   error
-	recipientsOut []store.Recipient
-	filesOut      []store.File
-	listOut       []store.ShipmentListItem
-	totalOut      int64
-	deleteErr     error
-	revokeErr     error
-	recipientStat []store.RecipientDownloadStat
-	eventCreates  []store.CreateNotificationEventParams
-	tokenCreates  []store.CreateAccessTokenParams
+	shipment           store.Shipment
+	filesByIDs         []store.FileWithShipment
+	finalizeOut        store.ShipmentFinalizeResult
+	finalizeArg        store.FinalizeShipmentParams
+	finalizeErr        error
+	recipientsOut      []store.Recipient
+	filesOut           []store.File
+	listOut            []store.ShipmentListItem
+	totalOut           int64
+	deleteErr          error
+	revokeErr          error
+	recipientStat      []store.RecipientDownloadStat
+	notificationStat   []store.RecipientNotificationStat
+	notificationEvents []store.NotificationEvent
+	notificationList   []store.NotificationEventListItem
+	notificationCount  int64
+	eventCreates       []store.CreateNotificationEventParams
+	tokenCreates       []store.CreateAccessTokenParams
 }
 
 type fakeMailQueue struct {
@@ -99,6 +103,18 @@ func (f *fakeShipmentStore) CountShipmentsByUser(ctx context.Context, ownerUserI
 }
 func (f *fakeShipmentStore) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error) {
 	return f.recipientStat, nil
+}
+func (f *fakeShipmentStore) GetNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.NotificationEvent, error) {
+	return f.notificationEvents, nil
+}
+func (f *fakeShipmentStore) ListNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID, limit int32, offset int32) ([]store.NotificationEventListItem, error) {
+	return f.notificationList, nil
+}
+func (f *fakeShipmentStore) CountNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) (int64, error) {
+	return f.notificationCount, nil
+}
+func (f *fakeShipmentStore) GetRecipientNotificationStatsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientNotificationStat, error) {
+	return f.notificationStat, nil
 }
 func (f *fakeShipmentStore) CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error) {
 	return 0, nil
@@ -241,6 +257,133 @@ func TestGetShipmentDetailByUser_Forbidden(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
 		t.Fatalf("expected 403 got=%v", err)
+	}
+}
+
+func TestGetShipmentDetailByUser_WithNotificationAndRecipientSummary(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	recipientID := uuid.New()
+	now := time.Now().UTC()
+	lastSent := now.Add(-1 * time.Hour)
+	firstDL := now.Add(-30 * time.Minute)
+	lastDL := now.Add(-10 * time.Minute)
+	statusSent := "sent"
+	eventType := "resend"
+	st := &fakeShipmentStore{
+		shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "sent", Title: "件名", ExpiresAt: now.Add(24 * time.Hour), MaxDownloads: 10},
+		recipientsOut: []store.Recipient{
+			{ID: recipientID, ShipmentID: shipID, Email: "a@example.com", Status: "pending"},
+		},
+		recipientStat: []store.RecipientDownloadStat{
+			{RecipientID: recipientID, Email: "a@example.com", DownloadCount: 2, FirstDownloadAt: &firstDL, LastDownloadAt: &lastDL},
+		},
+		notificationEvents: []store.NotificationEvent{
+			{ID: 1, ShipmentID: shipID, RecipientID: recipientID, Status: "queued", CreatedAt: now.Add(-2 * time.Hour)},
+			{ID: 2, ShipmentID: shipID, RecipientID: recipientID, Status: "sent", CreatedAt: lastSent},
+			{ID: 3, ShipmentID: shipID, RecipientID: recipientID, Status: "failed", CreatedAt: now.Add(-90 * time.Minute)},
+		},
+		notificationStat: []store.RecipientNotificationStat{
+			{RecipientID: recipientID, Email: "a@example.com", NotificationCount: 3, LastNotificationStatus: &statusSent, LastNotificationType: &eventType, LastNotificationAt: &lastSent},
+		},
+	}
+	svc := &ShipmentService{Store: st}
+	out, err := svc.GetShipmentDetailByUser(context.Background(), ownerID, shipID)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.NotificationSummary.TotalNotifications != 3 || out.NotificationSummary.QueuedCount != 1 || out.NotificationSummary.SentCount != 1 || out.NotificationSummary.FailedCount != 1 {
+		t.Fatalf("unexpected notification summary: %+v", out.NotificationSummary)
+	}
+	if len(out.RecipientSummaries) != 1 || !out.RecipientSummaries[0].HasDownloaded || out.RecipientSummaries[0].DownloadCount != 2 {
+		t.Fatalf("unexpected recipient summary: %+v", out.RecipientSummaries)
+	}
+}
+
+func TestListShipmentNotificationsByUser_Success(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	recipientID := uuid.New()
+	st := &fakeShipmentStore{
+		shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "sent"},
+		notificationList: []store.NotificationEventListItem{
+			{
+				NotificationEvent: store.NotificationEvent{
+					ID:          10,
+					ShipmentID:  shipID,
+					RecipientID: recipientID,
+					EventType:   "initial_send",
+					Status:      "sent",
+					CreatedAt:   time.Now().UTC(),
+				},
+				RecipientEmail: "a@example.com",
+			},
+		},
+		notificationCount: 1,
+	}
+	svc := &ShipmentService{Store: st}
+	out, err := svc.ListShipmentNotificationsByUser(context.Background(), ListShipmentNotificationsInput{
+		OwnerUserID: ownerID,
+		ShipmentID:  shipID,
+		Limit:       20,
+		Offset:      0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.Total != 1 || len(out.Items) != 1 || out.Items[0].RecipientEmail != "a@example.com" {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+}
+
+func TestListShipmentNotificationsByUser_ForbiddenAndNotFound(t *testing.T) {
+	ownerID := uuid.New()
+	otherID := uuid.New()
+	shipID := uuid.New()
+	svcForbidden := &ShipmentService{Store: &fakeShipmentStore{
+		shipment: store.Shipment{ID: shipID, OwnerUserID: &otherID, ShareMode: "recipient_restricted", Status: "sent"},
+	}}
+	_, err := svcForbidden.ListShipmentNotificationsByUser(context.Background(), ListShipmentNotificationsInput{
+		OwnerUserID: ownerID,
+		ShipmentID:  shipID,
+		Limit:       20,
+		Offset:      0,
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Fatalf("expected 403 got=%v", err)
+	}
+
+	svcNotFound := &ShipmentService{Store: &fakeShipmentStore{}}
+	_, err = svcNotFound.ListShipmentNotificationsByUser(context.Background(), ListShipmentNotificationsInput{
+		OwnerUserID: ownerID,
+		ShipmentID:  shipID,
+		Limit:       20,
+		Offset:      0,
+	})
+	if !errors.As(err, &apiErr) || apiErr.Status != 404 {
+		t.Fatalf("expected 404 got=%v", err)
+	}
+}
+
+func TestGetShipmentDetailByUser_NoNotifications(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	recipientID := uuid.New()
+	svc := &ShipmentService{Store: &fakeShipmentStore{
+		shipment:      store.Shipment{ID: shipID, OwnerUserID: &ownerID, ShareMode: "recipient_restricted", Status: "sent", ExpiresAt: time.Now().UTC().Add(24 * time.Hour)},
+		recipientsOut: []store.Recipient{{ID: recipientID, ShipmentID: shipID, Email: "none@example.com", Status: "pending"}},
+		recipientStat: []store.RecipientDownloadStat{{RecipientID: recipientID, Email: "none@example.com", DownloadCount: 0}},
+	}}
+	out, err := svc.GetShipmentDetailByUser(context.Background(), ownerID, shipID)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.NotificationSummary.TotalNotifications != 0 || out.NotificationSummary.LastNotificationAt != nil {
+		t.Fatalf("expected empty notification summary got=%+v", out.NotificationSummary)
+	}
+	if len(out.RecipientSummaries) != 1 || out.RecipientSummaries[0].HasDownloaded {
+		t.Fatalf("expected not downloaded recipient got=%+v", out.RecipientSummaries)
 	}
 }
 

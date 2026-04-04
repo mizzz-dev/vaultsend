@@ -73,7 +73,24 @@ func (f *fakeShipmentSvcStore) CountShipmentsByUser(ctx context.Context, ownerUs
 	return 1, nil
 }
 func (f *fakeShipmentSvcStore) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error) {
-	return nil, nil
+	return []store.RecipientDownloadStat{{RecipientID: uuid.New(), Email: "a@example.com", DownloadCount: 0}}, nil
+}
+func (f *fakeShipmentSvcStore) GetNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.NotificationEvent, error) {
+	return []store.NotificationEvent{{ID: 1, ShipmentID: shipmentID, RecipientID: uuid.New(), Status: "queued", EventType: "initial_send", CreatedAt: time.Now().UTC()}}, nil
+}
+func (f *fakeShipmentSvcStore) ListNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID, limit int32, offset int32) ([]store.NotificationEventListItem, error) {
+	return []store.NotificationEventListItem{
+		{
+			NotificationEvent: store.NotificationEvent{ID: 1, ShipmentID: shipmentID, RecipientID: uuid.New(), EventType: "initial_send", Status: "sent", CreatedAt: time.Now().UTC()},
+			RecipientEmail:    "a@example.com",
+		},
+	}, nil
+}
+func (f *fakeShipmentSvcStore) CountNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) (int64, error) {
+	return 1, nil
+}
+func (f *fakeShipmentSvcStore) GetRecipientNotificationStatsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientNotificationStat, error) {
+	return []store.RecipientNotificationStat{{RecipientID: uuid.New(), Email: "a@example.com", NotificationCount: 1}}, nil
 }
 func (f *fakeShipmentSvcStore) CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error) {
 	return 0, nil
@@ -140,6 +157,34 @@ func TestListShipmentsHandler_Pagination(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ListShipments(w, req)
 	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestListShipmentNotificationsHandler_Success(t *testing.T) {
+	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
+	h := ShipmentHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/v1/shipments/{id}/notifications", h.ListShipmentNotifications)
+	req := httptest.NewRequest(http.MethodGet, "/v1/shipments/"+uuid.NewString()+"/notifications?limit=10&offset=0", nil)
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestListShipmentNotificationsHandler_InvalidPagination(t *testing.T) {
+	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
+	h := ShipmentHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Get("/v1/shipments/{id}/notifications", h.ListShipmentNotifications)
+	req := httptest.NewRequest(http.MethodGet, "/v1/shipments/"+uuid.NewString()+"/notifications?limit=bad", nil)
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
