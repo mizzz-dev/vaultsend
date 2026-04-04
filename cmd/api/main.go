@@ -53,8 +53,13 @@ func main() {
 	}
 
 	shipmentSvc := &service.ShipmentService{Store: queries}
+	accessSvc := &service.AccessService{
+		Store:          queries,
+		ObjectStore:    s3Store,
+		DownloadURLTTL: 60 * time.Second,
+	}
 
-	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc)
+	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {

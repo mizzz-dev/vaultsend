@@ -104,6 +104,21 @@ curl -sS -X POST http://localhost:8080/v1/shipments \
 curl -sS http://localhost:8080/v1/shipments/{shipment_id}
 ```
 
+### access verify / download
+
+```bash
+# 1) 受信リンク情報取得（token有効性確認 + password要求有無）
+curl -sS http://localhost:8080/v1/access/{access_token}
+
+# 2) password付きshipmentの検証（password不要なら省略可）
+curl -sS -X POST http://localhost:8080/v1/access/{access_token}/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"passw0rd123"}'
+
+# 3) ファイルの短命ダウンロードURL発行（TTL 60秒）
+curl -sS "http://localhost:8080/v1/files/{file_id}/download-url?access_token={access_token}"
+```
+
 ## 開発用コマンド
 
 ```bash
@@ -131,5 +146,8 @@ make migrate-down
 - 仮置き: `POST /v1/uploads` は shipment 未指定時に匿名 draft shipment を自動作成します。
 - 仮置き: `POST /v1/shipments` の `access_url` は `https://app.example.com/r/{token}` 固定です。
 - 仮置き: `share_mode=public_link` は互換入力として受け付け、内部では `url_shared` に正規化します。
-- 未実装: access token verify API、download-url API、SES/SQS worker、認証本実装、virus scan。
+- 仮置き: brute-force対策（rate limit / captcha）は TODO です。
+- 仮置き: ダウンロード回数制御は shipment 単位（`download_events` の success件数）です。
+- 仮置き: `download_events.ip_hash` にはIP平文ではなくSHA-256 hashを保存します。
+- 未実装: SES/SQS worker、認証本実装、virus scan。
 - TODO: 現在の store は hand-rolled 実装です。次PRで sqlc generated code に置き換える予定です。

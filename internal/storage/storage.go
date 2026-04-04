@@ -23,4 +23,5 @@ type ObjectStore interface {
 	CreateMultipartUpload(ctx context.Context, bucket, key, contentType string) (uploadID string, err error)
 	BatchPresignUploadParts(ctx context.Context, bucket, key, uploadID string, partCount int, expiresIn time.Duration) ([]PresignedPart, error)
 	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) error
+	GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error)
 }

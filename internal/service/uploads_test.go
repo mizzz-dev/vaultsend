@@ -66,6 +66,9 @@ func (f *fakeObjectStore) BatchPresignUploadParts(ctx context.Context, bucket, k
 func (f *fakeObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []storage.CompletedPart) error {
 	return f.completeErr
 }
+func (f *fakeObjectStore) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
+	return "https://example.com/download", nil
+}
 
 func TestCreateUploadSession_ValidationError(t *testing.T) {
 	svc := &UploadService{Store: &fakeStore{}, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
