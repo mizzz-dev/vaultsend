@@ -40,6 +40,7 @@ type UploadStore interface {
 type UploadService struct {
 	Store               UploadStore
 	ObjectStore         storage.ObjectStore
+	Billing             *BillingService
 	S3Bucket            string
 	PartSizeBytes       int32
 	UploadURLTTL        time.Duration
@@ -82,6 +83,11 @@ type CompleteUploadOutput struct {
 func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUploadInput) (CreateUploadOutput, error) {
 	if err := s.validateCreateInput(in); err != nil {
 		return CreateUploadOutput{}, err
+	}
+	if s.Billing != nil {
+		if err := s.Billing.EnforceUploadLimit(ctx, in.OwnerUserID, in.FileSize); err != nil {
+			return CreateUploadOutput{}, err
+		}
 	}
 
 	partSize := s.partSize()

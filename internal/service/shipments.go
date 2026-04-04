@@ -55,6 +55,7 @@ type ShipmentService struct {
 	Store       ShipmentStore
 	Queue       queue.Enqueuer
 	FrontendURL string
+	Billing     *BillingService
 }
 
 type ShipmentRecipientInput struct {
@@ -219,6 +220,11 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 	expiresAt := now.AddDate(0, 0, 7)
 	if in.ExpiresAt != nil {
 		expiresAt = in.ExpiresAt.UTC()
+	}
+	if s.Billing != nil {
+		if err := s.Billing.EnforceShipmentLimit(ctx, in.OwnerUserID, expiresAt); err != nil {
+			return normalizedCreateShipment{}, err
+		}
 	}
 	min := now.AddDate(0, 0, defaultShipmentMinExpiryDays)
 	max := now.AddDate(0, 0, defaultShipmentMaxExpiryDays)

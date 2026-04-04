@@ -12,14 +12,17 @@ import (
 // Config はアプリケーション全体で利用する設定値を保持する。
 // MVP時点では環境変数ベースで管理し、後続PRでSecret Manager連携を検討する。
 type Config struct {
-	AppEnv       string
-	Port         string
-	DatabaseURL  string
-	AWSRegion    string
-	S3Bucket     string
-	SQSQueueURL  string
-	SESFromEmail string
-	FrontendURL  string
+	AppEnv              string
+	Port                string
+	DatabaseURL         string
+	AWSRegion           string
+	S3Bucket            string
+	SQSQueueURL         string
+	SESFromEmail        string
+	FrontendURL         string
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripePriceIDPro    string
 
 	// HTTPRequestTimeout はtimeout middlewareの既定値。
 	HTTPRequestTimeout time.Duration
@@ -53,6 +56,9 @@ func Load() (Config, error) {
 		SQSQueueURL:         os.Getenv("SQS_QUEUE_URL"),
 		SESFromEmail:        os.Getenv("SES_FROM_EMAIL"),
 		FrontendURL:         os.Getenv("FRONTEND_URL"),
+		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
+		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
+		StripePriceIDPro:    os.Getenv("STRIPE_PRICE_ID_PRO"),
 		HTTPRequestTimeout:  30 * time.Second,
 		UploadURLTTL:        15 * time.Minute,
 		PresignedURLTTL:     60 * time.Second,
@@ -183,6 +189,15 @@ func Load() (Config, error) {
 	}
 	if cfg.FrontendURL == "" {
 		missing = append(missing, "FRONTEND_URL")
+	}
+	if cfg.StripeSecretKey == "" {
+		missing = append(missing, "STRIPE_SECRET_KEY")
+	}
+	if cfg.StripeWebhookSecret == "" {
+		missing = append(missing, "STRIPE_WEBHOOK_SECRET")
+	}
+	if cfg.StripePriceIDPro == "" {
+		missing = append(missing, "STRIPE_PRICE_ID_PRO")
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required envs: %v", missing)
