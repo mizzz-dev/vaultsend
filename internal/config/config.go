@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -30,6 +32,12 @@ type Config struct {
 	RateLimitRPS      int
 	VerifyMaxAttempts int
 	DownloadRateLimit int
+
+	// 認証セッション関連。
+	SessionTTLHours int
+	CookieDomain    string
+	CookieSecure    bool
+	CookieSameSite  http.SameSite
 }
 
 func Load() (Config, error) {
@@ -51,8 +59,42 @@ func Load() (Config, error) {
 		RateLimitRPS:       100,
 		VerifyMaxAttempts:  5,
 		DownloadRateLimit:  10,
+		SessionTTLHours:    24 * 7,
+		CookieDomain:       strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")),
+		CookieSecure:       true,
+		CookieSameSite:     http.SameSiteLaxMode,
 	}
 
+	if cfg.AppEnv == "local" || cfg.AppEnv == "test" {
+		cfg.CookieSecure = false
+	}
+	if v := os.Getenv("COOKIE_SECURE"); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid COOKIE_SECURE: %q", v)
+		}
+		cfg.CookieSecure = parsed
+	}
+	if v := os.Getenv("COOKIE_SAMESITE"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "lax":
+			cfg.CookieSameSite = http.SameSiteLaxMode
+		case "strict":
+			cfg.CookieSameSite = http.SameSiteStrictMode
+		case "none":
+			cfg.CookieSameSite = http.SameSiteNoneMode
+		default:
+			return Config{}, fmt.Errorf("invalid COOKIE_SAMESITE: %q", v)
+		}
+	}
+
+	if v := os.Getenv("SESSION_TTL_HOURS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("invalid SESSION_TTL_HOURS: %q", v)
+		}
+		cfg.SessionTTLHours = n
+	}
 	if v := os.Getenv("HTTP_REQUEST_TIMEOUT_SEC"); v != "" {
 		sec, err := strconv.Atoi(v)
 		if err != nil || sec <= 0 {

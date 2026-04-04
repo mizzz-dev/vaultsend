@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/go-chi/chi/v5"
@@ -18,12 +19,13 @@ type ShipmentHandler struct {
 }
 
 type CreateShipmentRequest struct {
-	ShipmentID  *uuid.UUID  `json:"shipment_id"`
-	FileIDs     []uuid.UUID `json:"file_ids"`
-	OwnerUserID *uuid.UUID  `json:"owner_user_id"`
-	Subject     string      `json:"subject"`
-	Message     *string     `json:"message"`
-	ShareMode   string      `json:"share_mode"`
+	ShipmentID *uuid.UUID  `json:"shipment_id"`
+	FileIDs    []uuid.UUID `json:"file_ids"`
+	// 仮置き: 後方互換のためリクエスト項目は受け取るが、認証済み時はサーバー側のユーザーIDを優先する。
+	OwnerUserID *uuid.UUID `json:"owner_user_id"`
+	Subject     string     `json:"subject"`
+	Message     *string    `json:"message"`
+	ShareMode   string     `json:"share_mode"`
 	Recipients  []struct {
 		Email string `json:"email"`
 	} `json:"recipients"`
@@ -66,10 +68,15 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 		recipients = append(recipients, service.ShipmentRecipientInput{Email: rc.Email})
 	}
 
+	ownerUserID := req.OwnerUserID
+	if user, ok := middleware.AuthUserFromContext(r.Context()); ok {
+		ownerUserID = &user.ID
+	}
+
 	out, err := h.Service.CreateShipment(r.Context(), service.CreateShipmentInput{
 		ShipmentID:       req.ShipmentID,
 		FileIDs:          req.FileIDs,
-		OwnerUserID:      req.OwnerUserID,
+		OwnerUserID:      ownerUserID,
 		Subject:          req.Subject,
 		Message:          req.Message,
 		ShareMode:        req.ShareMode,

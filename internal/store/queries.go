@@ -765,3 +765,164 @@ func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
+
+type User struct {
+	ID              uuid.UUID
+	Email           string
+	EmailNormalized string
+	PasswordHash    string
+	DisplayName     *string
+	Status          string
+	EmailVerifiedAt *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type CreateUserParams struct {
+	Email           string
+	EmailNormalized string
+	PasswordHash    string
+	DisplayName     *string
+	Status          string
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+	const query = `
+INSERT INTO users (email, email_normalized, password_hash, display_name, status)
+VALUES ($1,$2,$3,$4,$5)
+RETURNING id, email, email_normalized, password_hash, display_name, status, email_verified_at, created_at, updated_at`
+	var out User
+	err := q.db.QueryRow(ctx, query, arg.Email, arg.EmailNormalized, arg.PasswordHash, arg.DisplayName, arg.Status).Scan(
+		&out.ID,
+		&out.Email,
+		&out.EmailNormalized,
+		&out.PasswordHash,
+		&out.DisplayName,
+		&out.Status,
+		&out.EmailVerifiedAt,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrConflict
+		}
+		return User{}, err
+	}
+	return out, nil
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, emailNormalized string) (User, error) {
+	const query = `
+SELECT id, email, email_normalized, password_hash, display_name, status, email_verified_at, created_at, updated_at
+FROM users WHERE email_normalized = $1`
+	var out User
+	err := q.db.QueryRow(ctx, query, emailNormalized).Scan(&out.ID, &out.Email, &out.EmailNormalized, &out.PasswordHash, &out.DisplayName, &out.Status, &out.EmailVerifiedAt, &out.CreatedAt, &out.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return out, err
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	const query = `
+SELECT id, email, email_normalized, password_hash, display_name, status, email_verified_at, created_at, updated_at
+FROM users WHERE id = $1`
+	var out User
+	err := q.db.QueryRow(ctx, query, id).Scan(&out.ID, &out.Email, &out.EmailNormalized, &out.PasswordHash, &out.DisplayName, &out.Status, &out.EmailVerifiedAt, &out.CreatedAt, &out.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return out, err
+}
+
+type Session struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	TokenHash  string
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+	UserAgent  *string
+	IPHash     *string
+}
+
+type SessionWithUser struct {
+	Session Session
+	User    User
+}
+
+type CreateSessionParams struct {
+	UserID    uuid.UUID
+	TokenHash string
+	ExpiresAt time.Time
+	UserAgent *string
+	IPHash    *string
+}
+
+func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
+	const query = `
+INSERT INTO sessions (user_id, token_hash, expires_at, user_agent, ip_hash)
+VALUES ($1,$2,$3,$4,$5)
+RETURNING id, user_id, token_hash, expires_at, created_at, last_used_at, revoked_at, user_agent, ip_hash`
+	var out Session
+	err := q.db.QueryRow(ctx, query, arg.UserID, arg.TokenHash, arg.ExpiresAt, arg.UserAgent, arg.IPHash).Scan(
+		&out.ID, &out.UserID, &out.TokenHash, &out.ExpiresAt, &out.CreatedAt, &out.LastUsedAt, &out.RevokedAt, &out.UserAgent, &out.IPHash,
+	)
+	return out, err
+}
+
+func (q *Queries) GetSessionByHash(ctx context.Context, tokenHash string) (Session, error) {
+	const query = `
+SELECT id, user_id, token_hash, expires_at, created_at, last_used_at, revoked_at, user_agent, ip_hash
+FROM sessions WHERE token_hash = $1`
+	var out Session
+	err := q.db.QueryRow(ctx, query, tokenHash).Scan(&out.ID, &out.UserID, &out.TokenHash, &out.ExpiresAt, &out.CreatedAt, &out.LastUsedAt, &out.RevokedAt, &out.UserAgent, &out.IPHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, ErrNotFound
+	}
+	return out, err
+}
+
+func (q *Queries) GetSessionByHashWithUser(ctx context.Context, tokenHash string) (SessionWithUser, error) {
+	const query = `
+SELECT s.id, s.user_id, s.token_hash, s.expires_at, s.created_at, s.last_used_at, s.revoked_at, s.user_agent, s.ip_hash,
+       u.id, u.email, u.email_normalized, u.password_hash, u.display_name, u.status, u.email_verified_at, u.created_at, u.updated_at
+FROM sessions s
+JOIN users u ON u.id = s.user_id
+WHERE s.token_hash = $1`
+	var out SessionWithUser
+	err := q.db.QueryRow(ctx, query, tokenHash).Scan(
+		&out.Session.ID, &out.Session.UserID, &out.Session.TokenHash, &out.Session.ExpiresAt, &out.Session.CreatedAt, &out.Session.LastUsedAt, &out.Session.RevokedAt, &out.Session.UserAgent, &out.Session.IPHash,
+		&out.User.ID, &out.User.Email, &out.User.EmailNormalized, &out.User.PasswordHash, &out.User.DisplayName, &out.User.Status, &out.User.EmailVerifiedAt, &out.User.CreatedAt, &out.User.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SessionWithUser{}, ErrNotFound
+	}
+	return out, err
+}
+
+func (q *Queries) RevokeSession(ctx context.Context, tokenHash string) error {
+	const query = `UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`
+	cmd, err := q.db.Exec(ctx, query, tokenHash)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (q *Queries) UpdateSessionLastUsed(ctx context.Context, tokenHash string, lastUsedAt time.Time) error {
+	const query = `UPDATE sessions SET last_used_at = $2 WHERE token_hash = $1`
+	cmd, err := q.db.Exec(ctx, query, tokenHash, lastUsedAt)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

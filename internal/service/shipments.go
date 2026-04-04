@@ -277,8 +277,10 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 		if f.ShipmentStatus != "draft" && f.ShipmentStatus != "uploading" && f.ShipmentStatus != "ready" {
 			return normalizedCreateShipment{}, &APIError{Status: 409, Code: "file_shipment_status_conflict", Message: "既に確定済みの shipment に紐づく file は利用できません"}
 		}
-		if in.OwnerUserID != nil && f.OwnerUserID != nil && *in.OwnerUserID != *f.OwnerUserID {
-			return normalizedCreateShipment{}, &APIError{Status: 409, Code: "file_owner_conflict", Message: "owner_user_id が一致しない file が含まれています"}
+		if in.OwnerUserID != nil {
+			if f.OwnerUserID == nil || *in.OwnerUserID != *f.OwnerUserID {
+				return normalizedCreateShipment{}, &APIError{Status: 409, Code: "file_owner_conflict", Message: "ログインユーザーが所有していない file が含まれています"}
+			}
 		}
 	}
 

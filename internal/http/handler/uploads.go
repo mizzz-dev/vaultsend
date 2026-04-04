@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/example/vaultsend/internal/storage"
@@ -47,8 +48,14 @@ func (h UploadHandler) CreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var ownerUserID *uuid.UUID
+	if user, ok := middleware.AuthUserFromContext(r.Context()); ok {
+		ownerUserID = &user.ID
+	}
+
 	out, err := h.Service.CreateUploadSession(r.Context(), service.CreateUploadInput{
 		ShipmentID:     req.ShipmentID,
+		OwnerUserID:    ownerUserID,
 		FileName:       req.FileName,
 		ContentType:    req.ContentType,
 		FileSize:       req.FileSize,
