@@ -11,10 +11,9 @@ import (
 )
 
 var ErrNotFound = errors.New("store: not found")
+var ErrConflict = errors.New("store: conflict")
 
 // TODO: 次PRで sqlc generated code に置き換え、手書きSQLを段階的に削除する。
-
-// --- shipments ---
 
 type CreateShipmentParams struct {
 	OwnerType    string
@@ -35,6 +34,7 @@ type Shipment struct {
 	ShareMode        string `json:"share_mode"`
 	Title            string `json:"title"`
 	Message          *string
+	PasswordHash     *string
 	MaxDownloads     int32     `json:"max_downloads"`
 	CurrentDownloads int32     `json:"current_downloads"`
 	ExpiresAt        time.Time `json:"expires_at"`
@@ -46,13 +46,17 @@ type Shipment struct {
 }
 
 func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) (Shipment, error) {
+	return q.createShipment(ctx, q.db, arg)
+}
+
+func (q *Queries) createShipment(ctx context.Context, db dbtx, arg CreateShipmentParams) (Shipment, error) {
 	const query = `
 INSERT INTO shipments (
     owner_type, owner_user_id, status, share_mode, title, message, max_downloads, expires_at
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, max_downloads,
+RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
           current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at`
-	row := q.db.QueryRow(ctx, query,
+	row := db.QueryRow(ctx, query,
 		arg.OwnerType,
 		arg.OwnerUserID,
 		arg.Status,
@@ -63,58 +67,153 @@ RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, max
 		arg.ExpiresAt,
 	)
 	var s Shipment
-	err := row.Scan(
-		&s.ID,
-		&s.OwnerType,
-		&s.OwnerUserID,
-		&s.Status,
-		&s.ShareMode,
-		&s.Title,
-		&s.Message,
-		&s.MaxDownloads,
-		&s.CurrentDownloads,
-		&s.ExpiresAt,
-		&s.SentAt,
-		&s.RevokedAt,
-		&s.DeletedAt,
-		&s.CreatedAt,
-		&s.UpdatedAt,
-	)
+	err := scanShipment(row, &s)
 	return s, err
 }
 
 func (q *Queries) GetShipment(ctx context.Context, id uuid.UUID) (Shipment, error) {
 	const query = `
-SELECT id, owner_type, owner_user_id, status, share_mode, title, message, max_downloads,
+SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
        current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
 FROM shipments
 WHERE id = $1`
 	row := q.db.QueryRow(ctx, query, id)
 	var s Shipment
-	err := row.Scan(
-		&s.ID,
-		&s.OwnerType,
-		&s.OwnerUserID,
-		&s.Status,
-		&s.ShareMode,
-		&s.Title,
-		&s.Message,
-		&s.MaxDownloads,
-		&s.CurrentDownloads,
-		&s.ExpiresAt,
-		&s.SentAt,
-		&s.RevokedAt,
-		&s.DeletedAt,
-		&s.CreatedAt,
-		&s.UpdatedAt,
-	)
+	err := scanShipment(row, &s)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Shipment{}, ErrNotFound
 	}
 	return s, err
 }
 
-// --- files ---
+type FinalizeShipmentParams struct {
+	ShipmentID               uuid.UUID
+	ExpectedStatuses         []string
+	Title                    string
+	Message                  *string
+	ShareMode                string
+	Status                   string
+	ExpiresAt                time.Time
+	MaxDownloads             int32
+	PasswordHash             *string
+	OwnerUserID              *uuid.UUID
+	FileIDs                  []uuid.UUID
+	Recipients               []CreateRecipientParams
+	AccessTokens             []CreateAccessTokenParams
+	PlainRecipientTokenByKey map[string]string
+}
+
+type ShipmentFinalizeResult struct {
+	Shipment   Shipment
+	Files      []File
+	Recipients []Recipient
+}
+
+func (q *Queries) FinalizeShipment(ctx context.Context, arg FinalizeShipmentParams) (ShipmentFinalizeResult, error) {
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return ShipmentFinalizeResult{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	const lockQuery = `SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+       current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
+FROM shipments WHERE id = $1 FOR UPDATE`
+	var current Shipment
+	if err := scanShipment(tx.QueryRow(ctx, lockQuery, arg.ShipmentID), &current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ShipmentFinalizeResult{}, ErrNotFound
+		}
+		return ShipmentFinalizeResult{}, err
+	}
+	if len(arg.ExpectedStatuses) > 0 {
+		ok := false
+		for _, st := range arg.ExpectedStatuses {
+			if current.Status == st {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return ShipmentFinalizeResult{}, ErrConflict
+		}
+	}
+
+	const updateShipment = `
+UPDATE shipments
+SET title=$2, message=$3, share_mode=$4, status=$5, expires_at=$6, max_downloads=$7, password_hash=$8, owner_user_id=COALESCE($9, owner_user_id), sent_at=CASE WHEN $5 = 'sent' THEN now() ELSE sent_at END
+WHERE id=$1
+RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+          current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at`
+	var shipment Shipment
+	if err := scanShipment(tx.QueryRow(ctx, updateShipment,
+		arg.ShipmentID,
+		arg.Title,
+		arg.Message,
+		arg.ShareMode,
+		arg.Status,
+		arg.ExpiresAt,
+		arg.MaxDownloads,
+		arg.PasswordHash,
+		arg.OwnerUserID,
+	), &shipment); err != nil {
+		return ShipmentFinalizeResult{}, err
+	}
+
+	if len(arg.FileIDs) > 0 {
+		const attachFiles = `UPDATE files SET shipment_id = $1 WHERE id = ANY($2::uuid[])`
+		cmd, execErr := tx.Exec(ctx, attachFiles, arg.ShipmentID, arg.FileIDs)
+		if execErr != nil {
+			return ShipmentFinalizeResult{}, execErr
+		}
+		if int(cmd.RowsAffected()) != len(arg.FileIDs) {
+			return ShipmentFinalizeResult{}, ErrNotFound
+		}
+	}
+
+	recipients := make([]Recipient, 0, len(arg.Recipients))
+	if len(arg.Recipients) > 0 {
+		created, createErr := q.createRecipients(ctx, tx, arg.ShipmentID, arg.Recipients)
+		if createErr != nil {
+			if isUniqueViolation(createErr) {
+				return ShipmentFinalizeResult{}, ErrConflict
+			}
+			return ShipmentFinalizeResult{}, createErr
+		}
+		recipients = created
+	}
+
+	if len(arg.AccessTokens) > 0 {
+		recipientMap := map[string]uuid.UUID{}
+		for _, r := range recipients {
+			recipientMap[r.EmailNormalized] = r.ID
+		}
+		for i := range arg.AccessTokens {
+			if key := arg.AccessTokens[i].RecipientEmailNormalized; key != "" {
+				id, ok := recipientMap[key]
+				if !ok {
+					return ShipmentFinalizeResult{}, ErrConflict
+				}
+				arg.AccessTokens[i].RecipientID = &id
+			}
+		}
+		if err := q.createAccessTokens(ctx, tx, arg.ShipmentID, arg.AccessTokens); err != nil {
+			if isUniqueViolation(err) {
+				return ShipmentFinalizeResult{}, ErrConflict
+			}
+			return ShipmentFinalizeResult{}, err
+		}
+	}
+
+	files, err := q.getFilesByShipmentID(ctx, tx, arg.ShipmentID)
+	if err != nil {
+		return ShipmentFinalizeResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ShipmentFinalizeResult{}, err
+	}
+	return ShipmentFinalizeResult{Shipment: shipment, Files: files, Recipients: recipients}, nil
+}
 
 type CreateFileParams struct {
 	ShipmentID     uuid.UUID
@@ -140,6 +239,12 @@ type File struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type FileWithShipment struct {
+	File
+	ShipmentStatus string
+	OwnerUserID    *uuid.UUID
+}
+
 func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
 	return q.createFile(ctx, q.db, arg)
 }
@@ -163,22 +268,154 @@ RETURNING id, shipment_id, original_name, size_bytes, mime_type, storage_bucket,
 		arg.UploadStatus,
 	)
 	var f File
-	err := row.Scan(
-		&f.ID,
-		&f.ShipmentID,
-		&f.OriginalName,
-		&f.SizeBytes,
-		&f.MimeType,
-		&f.StorageBucket,
-		&f.StorageKey,
-		&f.ChecksumSha256,
-		&f.UploadStatus,
-		&f.CreatedAt,
-	)
+	err := scanFile(row, &f)
 	return f, err
 }
 
-// --- upload_sessions ---
+func (q *Queries) GetFilesByIDs(ctx context.Context, ids []uuid.UUID) ([]FileWithShipment, error) {
+	if len(ids) == 0 {
+		return []FileWithShipment{}, nil
+	}
+	const query = `
+SELECT f.id, f.shipment_id, f.original_name, f.size_bytes, f.mime_type, f.storage_bucket, f.storage_key, f.checksum_sha256, f.upload_status, f.created_at,
+       s.status,
+       us.owner_user_id
+FROM files f
+JOIN shipments s ON s.id = f.shipment_id
+LEFT JOIN upload_sessions us ON us.file_id = f.id
+WHERE f.id = ANY($1::uuid[])`
+	rows, err := q.db.Query(ctx, query, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]FileWithShipment, 0, len(ids))
+	for rows.Next() {
+		var item FileWithShipment
+		if err := rows.Scan(
+			&item.ID,
+			&item.ShipmentID,
+			&item.OriginalName,
+			&item.SizeBytes,
+			&item.MimeType,
+			&item.StorageBucket,
+			&item.StorageKey,
+			&item.ChecksumSha256,
+			&item.UploadStatus,
+			&item.CreatedAt,
+			&item.ShipmentStatus,
+			&item.OwnerUserID,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (q *Queries) GetFilesByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]File, error) {
+	return q.getFilesByShipmentID(ctx, q.db, shipmentID)
+}
+
+func (q *Queries) getFilesByShipmentID(ctx context.Context, db dbtx, shipmentID uuid.UUID) ([]File, error) {
+	const query = `
+SELECT id, shipment_id, original_name, size_bytes, mime_type, storage_bucket, storage_key, checksum_sha256, upload_status, created_at
+FROM files WHERE shipment_id = $1 ORDER BY created_at ASC`
+	rows, err := db.Query(ctx, query, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []File
+	for rows.Next() {
+		var f File
+		if err := scanFile(rows, &f); err != nil {
+			return nil, err
+		}
+		items = append(items, f)
+	}
+	return items, rows.Err()
+}
+
+type CreateRecipientParams struct {
+	Email           string
+	EmailNormalized string
+	Status          string
+}
+
+type Recipient struct {
+	ID              uuid.UUID
+	ShipmentID      uuid.UUID
+	Email           string
+	EmailNormalized string
+	Status          string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]Recipient, error) {
+	const query = `SELECT id, shipment_id, email, email_normalized, status, created_at, updated_at FROM recipients WHERE shipment_id=$1 ORDER BY created_at ASC`
+	rows, err := q.db.Query(ctx, query, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var recipients []Recipient
+	for rows.Next() {
+		var r Recipient
+		if err := rows.Scan(&r.ID, &r.ShipmentID, &r.Email, &r.EmailNormalized, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		recipients = append(recipients, r)
+	}
+	return recipients, rows.Err()
+}
+
+func (q *Queries) createRecipients(ctx context.Context, db dbtx, shipmentID uuid.UUID, recipients []CreateRecipientParams) ([]Recipient, error) {
+	result := make([]Recipient, 0, len(recipients))
+	const query = `
+INSERT INTO recipients (shipment_id, email, email_normalized, status)
+VALUES ($1, $2, $3, $4)
+RETURNING id, shipment_id, email, email_normalized, status, created_at, updated_at`
+	for _, r := range recipients {
+		var created Recipient
+		if err := db.QueryRow(ctx, query, shipmentID, r.Email, r.EmailNormalized, r.Status).Scan(
+			&created.ID,
+			&created.ShipmentID,
+			&created.Email,
+			&created.EmailNormalized,
+			&created.Status,
+			&created.CreatedAt,
+			&created.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, created)
+	}
+	return result, nil
+}
+
+type CreateAccessTokenParams struct {
+	RecipientID              *uuid.UUID
+	RecipientEmailNormalized string
+	TokenType                string
+	TokenHash                string
+	ExpiresAt                time.Time
+	MaxUses                  int32
+	Status                   string
+}
+
+func (q *Queries) createAccessTokens(ctx context.Context, db dbtx, shipmentID uuid.UUID, tokens []CreateAccessTokenParams) error {
+	const query = `
+INSERT INTO access_tokens (shipment_id, recipient_id, token_type, token_hash, expires_at, max_uses, status)
+VALUES ($1,$2,$3,$4,$5,$6,$7)`
+	for _, t := range tokens {
+		if _, err := db.Exec(ctx, query, shipmentID, t.RecipientID, t.TokenType, t.TokenHash, t.ExpiresAt, t.MaxUses, t.Status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 type CreateUploadSessionParams struct {
 	ShipmentID        *uuid.UUID
@@ -315,6 +552,7 @@ type rowScanner interface {
 
 type dbtx interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
@@ -336,4 +574,45 @@ func scanUploadSession(row rowScanner, s *UploadSession) error {
 		&s.OwnerUserID,
 		&s.CreatedAt,
 	)
+}
+
+func scanShipment(row rowScanner, s *Shipment) error {
+	return row.Scan(
+		&s.ID,
+		&s.OwnerType,
+		&s.OwnerUserID,
+		&s.Status,
+		&s.ShareMode,
+		&s.Title,
+		&s.Message,
+		&s.PasswordHash,
+		&s.MaxDownloads,
+		&s.CurrentDownloads,
+		&s.ExpiresAt,
+		&s.SentAt,
+		&s.RevokedAt,
+		&s.DeletedAt,
+		&s.CreatedAt,
+		&s.UpdatedAt,
+	)
+}
+
+func scanFile(row rowScanner, f *File) error {
+	return row.Scan(
+		&f.ID,
+		&f.ShipmentID,
+		&f.OriginalName,
+		&f.SizeBytes,
+		&f.MimeType,
+		&f.StorageBucket,
+		&f.StorageKey,
+		&f.ChecksumSha256,
+		&f.UploadStatus,
+		&f.CreatedAt,
+	)
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

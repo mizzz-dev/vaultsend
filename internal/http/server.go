@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService) stdhttp.Handler {
+func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService) stdhttp.Handler {
 	r := chi.NewRouter()
 
 	r.Use(appmw.RequestID)
@@ -20,7 +20,7 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 	r.Use(appmw.Timeout(cfg.HTTPRequestTimeout))
 
 	uploadHandler := handler.UploadHandler{Service: uploadSvc}
-	shipmentHandler := handler.ShipmentHandler{Queries: queries}
+	shipmentHandler := handler.ShipmentHandler{Service: shipmentSvc}
 
 	r.Get("/healthz", handler.Health)
 	r.Route("/v1", func(r chi.Router) {
