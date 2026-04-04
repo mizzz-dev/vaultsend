@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/example/vaultsend/internal/http/render"
@@ -34,8 +34,16 @@ type CreateShipmentRequest struct {
 
 func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) {
 	var req CreateShipmentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
+		return
+	}
+	if len(strings.TrimSpace(req.Subject)) > 200 {
+		render.Error(w, http.StatusBadRequest, "invalid_subject", "subject が長すぎます", chimw.GetReqID(r.Context()))
+		return
+	}
+	if req.Message != nil && len(strings.TrimSpace(*req.Message)) > 5000 {
+		render.Error(w, http.StatusBadRequest, "invalid_message", "message が長すぎます", chimw.GetReqID(r.Context()))
 		return
 	}
 
@@ -51,6 +59,10 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 
 	recipients := make([]service.ShipmentRecipientInput, 0, len(req.Recipients))
 	for _, rc := range req.Recipients {
+		if !isValidEmail(rc.Email) {
+			render.Error(w, http.StatusBadRequest, "invalid_recipients", "email 形式が不正です", chimw.GetReqID(r.Context()))
+			return
+		}
 		recipients = append(recipients, service.ShipmentRecipientInput{Email: rc.Email})
 	}
 

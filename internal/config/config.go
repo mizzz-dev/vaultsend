@@ -22,9 +22,14 @@ type Config struct {
 	// HTTPRequestTimeout はtimeout middlewareの既定値。
 	HTTPRequestTimeout time.Duration
 	UploadURLTTL       time.Duration
+	PresignedURLTTL    time.Duration
 	UploadPartSize     int32
 	UploadMaxFileSize  int64
 	UploadMaxParts     int
+
+	RateLimitRPS      int
+	VerifyMaxAttempts int
+	DownloadRateLimit int
 }
 
 func Load() (Config, error) {
@@ -39,9 +44,13 @@ func Load() (Config, error) {
 		FrontendURL:        os.Getenv("FRONTEND_URL"),
 		HTTPRequestTimeout: 30 * time.Second,
 		UploadURLTTL:       15 * time.Minute,
+		PresignedURLTTL:    60 * time.Second,
 		UploadPartSize:     8 * 1024 * 1024,
 		UploadMaxFileSize:  10 * 1024 * 1024 * 1024,
 		UploadMaxParts:     1000,
+		RateLimitRPS:       100,
+		VerifyMaxAttempts:  5,
+		DownloadRateLimit:  10,
 	}
 
 	if v := os.Getenv("HTTP_REQUEST_TIMEOUT_SEC"); v != "" {
@@ -57,6 +66,34 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid UPLOAD_URL_TTL_SEC: %q", v)
 		}
 		cfg.UploadURLTTL = time.Duration(sec) * time.Second
+	}
+	if v := os.Getenv("PRESIGNED_URL_TTL"); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil || sec <= 0 {
+			return Config{}, fmt.Errorf("invalid PRESIGNED_URL_TTL: %q", v)
+		}
+		cfg.PresignedURLTTL = time.Duration(sec) * time.Second
+	}
+	if v := os.Getenv("RATE_LIMIT_RPS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("invalid RATE_LIMIT_RPS: %q", v)
+		}
+		cfg.RateLimitRPS = n
+	}
+	if v := os.Getenv("VERIFY_MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("invalid VERIFY_MAX_ATTEMPTS: %q", v)
+		}
+		cfg.VerifyMaxAttempts = n
+	}
+	if v := os.Getenv("DOWNLOAD_RATE_LIMIT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("invalid DOWNLOAD_RATE_LIMIT: %q", v)
+		}
+		cfg.DownloadRateLimit = n
 	}
 
 	missing := make([]string, 0)

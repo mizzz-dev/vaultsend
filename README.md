@@ -43,6 +43,10 @@ export FRONTEND_URL='http://localhost:3000'
 
 # uploads 本実装向け（任意上書き）
 export UPLOAD_URL_TTL_SEC=900
+export RATE_LIMIT_RPS=100
+export VERIFY_MAX_ATTEMPTS=5
+export DOWNLOAD_RATE_LIMIT=10
+export PRESIGNED_URL_TTL=60
 ```
 
 ### 3) マイグレーション適用
@@ -138,9 +142,25 @@ curl -sS -X POST http://localhost:8080/v1/access/{access_token}/verify \
   -H 'Content-Type: application/json' \
   -d '{"password":"passw0rd123"}'
 
-# 3) ファイルの短命ダウンロードURL発行（TTL 60秒）
+# 3) ファイルの短命ダウンロードURL発行（TTL は PRESIGNED_URL_TTL で設定）
 curl -sS "http://localhost:8080/v1/files/{file_id}/download-url?access_token={access_token}"
 ```
+
+## レート制限 / セキュリティ仕様（MVP仮置き）
+
+- API全体: `100 req / 分 / IP`（`RATE_LIMIT_RPS`）
+- `POST /v1/access/{token}/verify`: より厳しめのレート制限 + brute-force対策
+  - token単位の失敗回数をカウント
+  - `VERIFY_MAX_ATTEMPTS` 超過で 10 分ロック
+- `GET /v1/files/{id}/download-url`: token + IP 組み合わせで短時間連続発行を制限（`DOWNLOAD_RATE_LIMIT` / 分）
+- セキュリティヘッダ:
+  - `X-Content-Type-Options: nosniff`
+  - `X-Frame-Options: DENY`
+  - `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'`
+- suspicious accessログ:
+  - `rate_limit_hit`
+  - `verify_failure`, `verify_locked`
+  - `download_abuse_block`
 
 ## ローカル確認方法（仮置き）
 
@@ -177,7 +197,7 @@ make migrate-down
 
 - 仮置き: `POST /v1/uploads` は shipment 未指定時に匿名 draft shipment を自動作成します。
 - 仮置き: `share_mode=public_link` は互換入力として受け付け、内部では `url_shared` に正規化します。
-- 仮置き: brute-force対策（rate limit / captcha）は TODO です。
+- 仮置き: レート制限は in-memory 実装です（将来 Redis 置換予定）。
 - 仮置き: ダウンロード回数制御は shipment 単位（`download_events` の success件数）です。
 - 仮置き: `download_events.ip_hash` にはIP平文ではなくSHA-256 hashを保存します。
 - 未実装: メール再送API、バウンス処理、SNS連携。

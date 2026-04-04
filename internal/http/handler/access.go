@@ -1,10 +1,10 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
@@ -19,6 +19,10 @@ type AccessHandler struct {
 
 func (h AccessHandler) InspectAccess(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
+	if len(token) > 256 || strings.TrimSpace(token) == "" {
+		render.Error(w, http.StatusBadRequest, "invalid_token", "token が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
 	out, err := h.Service.InspectAccess(r.Context(), token)
 	if err != nil {
 		h.writeServiceError(w, r, err)
@@ -32,8 +36,12 @@ func (h AccessHandler) VerifyAccess(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password *string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
+		return
+	}
+	if req.Password != nil && len(*req.Password) > 256 {
+		render.Error(w, http.StatusBadRequest, "invalid_password", "password が長すぎます", chimw.GetReqID(r.Context()))
 		return
 	}
 	if err := h.Service.VerifyAccess(r.Context(), service.VerifyAccessInput{Token: token, Password: req.Password}); err != nil {
@@ -50,6 +58,10 @@ func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	token := r.URL.Query().Get("access_token")
+	if len(token) > 256 || strings.TrimSpace(token) == "" {
+		render.Error(w, http.StatusBadRequest, "invalid_token", "access_token が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
 	out, err := h.Service.GenerateDownloadURL(r.Context(), service.DownloadURLInput{
 		Token:     token,
 		FileID:    fileID,
