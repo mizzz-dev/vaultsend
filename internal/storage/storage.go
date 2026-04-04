@@ -1,16 +1,26 @@
 package storage
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // PresignedPart は multipart upload の各パートURLを表す。
 type PresignedPart struct {
-	PartNumber int    `json:"part_number"`
-	URL        string `json:"url"`
+	PartNumber int32  `json:"part_number"`
+	URL        string `json:"presigned_url"`
 }
 
-// ObjectStore は S3 への依存を抽象化する。
-// TODO: 次PRで initiate/complete/abort の本実装を追加する。
+// CompletedPart は multipart upload 完了時に必要なパート情報。
+type CompletedPart struct {
+	PartNumber int32
+	ETag       string
+}
+
+// ObjectStore は S3 依存を隠蔽する抽象。
+// handler/service から AWS SDK を直接触らないための境界として利用する。
 type ObjectStore interface {
-	CreateMultipartUpload(ctx context.Context, bucket, key string, partCount int) (uploadID string, parts []PresignedPart, err error)
-	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, etags map[int]string) error
+	CreateMultipartUpload(ctx context.Context, bucket, key, contentType string) (uploadID string, err error)
+	BatchPresignUploadParts(ctx context.Context, bucket, key, uploadID string, partCount int, expiresIn time.Duration) ([]PresignedPart, error)
+	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) error
 }
