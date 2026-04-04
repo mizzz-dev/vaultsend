@@ -118,29 +118,60 @@ func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, http.StatusOK, out)
 }
 
+func (h ShipmentHandler) ListShipmentNotifications(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	id, ok := parseShipmentIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	limit, offset, ok := parseLimitOffset(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.Service.ListShipmentNotificationsByUser(r.Context(), service.ListShipmentNotificationsInput{
+		OwnerUserID: user.ID,
+		ShipmentID:  id,
+		Limit:       limit,
+		Offset:      offset,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
+}
+
+func (h ShipmentHandler) ListShipmentRecipients(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	id, ok := parseShipmentIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.Service.ListShipmentRecipientsByUser(r.Context(), user.ID, id)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
 func (h ShipmentHandler) ListShipments(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.AuthUserFromContext(r.Context())
 	if !ok {
 		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
 		return
 	}
-	limit := int32(20)
-	offset := int32(0)
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		v, err := strconv.Atoi(raw)
-		if err != nil || v <= 0 {
-			render.Error(w, http.StatusBadRequest, "invalid_limit", "limit が不正です", chimw.GetReqID(r.Context()))
-			return
-		}
-		limit = int32(v)
-	}
-	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
-		v, err := strconv.Atoi(raw)
-		if err != nil || v < 0 {
-			render.Error(w, http.StatusBadRequest, "invalid_offset", "offset が不正です", chimw.GetReqID(r.Context()))
-			return
-		}
-		offset = int32(v)
+	limit, offset, ok := parseLimitOffset(w, r)
+	if !ok {
+		return
 	}
 
 	out, err := h.Service.ListShipmentsByUser(r.Context(), service.ShipmentListInput{
@@ -153,6 +184,38 @@ func (h ShipmentHandler) ListShipments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
+}
+
+func parseShipmentIDFromPath(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_shipment_id", "shipment id が不正です", chimw.GetReqID(r.Context()))
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func parseLimitOffset(w http.ResponseWriter, r *http.Request) (int32, int32, bool) {
+	limit := int32(20)
+	offset := int32(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			render.Error(w, http.StatusBadRequest, "invalid_limit", "limit が不正です", chimw.GetReqID(r.Context()))
+			return 0, 0, false
+		}
+		limit = int32(v)
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			render.Error(w, http.StatusBadRequest, "invalid_offset", "offset が不正です", chimw.GetReqID(r.Context()))
+			return 0, 0, false
+		}
+		offset = int32(v)
+	}
+	return limit, offset, true
 }
 
 func (h ShipmentHandler) DeleteShipment(w http.ResponseWriter, r *http.Request) {

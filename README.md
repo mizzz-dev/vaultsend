@@ -256,6 +256,13 @@ make migrate-down
   - ログインユーザー本人の shipment のみ取得可能
   - shipment, files, recipients を返却
   - download_count / recipient_downloads / last_download_at を返却
+  - notification_summary を返却
+    - `total_notifications`, `queued_count`, `sent_count`, `failed_count`, `last_notification_at`
+  - recipient_summaries を返却
+    - `recipient_status`（DB上の recipients.status）
+    - `has_downloaded`（download_events success が1件以上かどうか）
+    - `notification_count`, `last_notification_status`, `last_notification_type`, `last_notified_at`
+    - `download_count`, `first_download_at`, `last_download_at`
   - token の生値・hash は返却しない
 - `GET /v1/shipments`
   - ログインユーザーの shipment 一覧を返却（`limit`, `offset` ページネーション）
@@ -266,6 +273,17 @@ make migrate-down
   - `recipient_ids` 指定時は shipment に属する recipient のみ許可
   - 再送不可条件: owner不一致 / `url_shared` / deleted / revoked / expired / 不正status
   - レスポンス: `shipment_id`, `resent_recipient_count`, `skipped_recipient_count`, `skipped_reasons`, `queued_at`
+- `GET /v1/shipments/{id}/notifications`
+  - ログインユーザー本人の shipment のみ取得可能
+  - shipment に紐づく notification_events を新しい順で返却
+  - `limit` / `offset` でページング
+  - レスポンス項目:
+    - `notification_event_id`, `recipient_id`, `recipient_email`
+    - `event_type`, `status`, `error_message`
+    - `created_at`, `queued_at`, `sent_at`, `failed_at`
+- `GET /v1/shipments/{id}/recipients`
+  - ログインユーザー本人の shipment のみ取得可能
+  - recipient ごとの通知・受領集計を返却（`items` 配列）
 - `DELETE /v1/shipments/{id}`
   - ログインユーザー本人の shipment のみ論理削除（`status=deleted`）
   - 関連する access token を revoke し、以後ダウンロード不可
@@ -299,6 +317,64 @@ curl -sS -X POST http://localhost:8080/v1/shipments/{shipment_id}/resend \
 - API側で enqueue 前に `queued` を記録し、worker側で送信結果に応じて `sent_at` / `failed_at` を更新します。
 - 仮置き: 失敗時の再試行制御は SQS retry に委譲（独自の再送回数制御は未実装）。
 
+### shipment detail response 例（通知/受領可視化）
+
+```json
+{
+  "id": "d5a79053-a2fa-4b57-aeb0-83af5dc25728",
+  "status": "sent",
+  "share_mode": "recipient_restricted",
+  "subject": "4月請求書",
+  "download_count": 1,
+  "notification_summary": {
+    "total_notifications": 3,
+    "queued_count": 1,
+    "sent_count": 1,
+    "failed_count": 1,
+    "last_notification_at": "2026-04-04T08:10:00Z"
+  },
+  "recipient_summaries": [
+    {
+      "recipient_id": "8fb4d31a-5d14-4874-bfbf-5ca5f1d9bdbf",
+      "email": "a@example.com",
+      "recipient_status": "pending",
+      "notification_count": 2,
+      "last_notification_status": "sent",
+      "last_notification_type": "resend",
+      "last_notified_at": "2026-04-04T08:10:00Z",
+      "has_downloaded": true,
+      "download_count": 1,
+      "first_download_at": "2026-04-04T08:30:00Z",
+      "last_download_at": "2026-04-04T08:30:00Z"
+    }
+  ]
+}
+```
+
+### notifications API response 例
+
+```json
+{
+  "items": [
+    {
+      "notification_event_id": 120,
+      "recipient_id": "8fb4d31a-5d14-4874-bfbf-5ca5f1d9bdbf",
+      "recipient_email": "a@example.com",
+      "event_type": "resend",
+      "status": "failed",
+      "error_message": "ses temporary failure",
+      "created_at": "2026-04-04T08:00:00Z",
+      "queued_at": "2026-04-04T08:00:00Z",
+      "sent_at": null,
+      "failed_at": "2026-04-04T08:00:03Z"
+    }
+  ],
+  "limit": 20,
+  "offset": 0,
+  "total": 1
+}
+```
+
 ### 送信履歴APIレスポンス例（抜粋）
 
 ```json
@@ -330,5 +406,8 @@ curl -sS -X POST http://localhost:8080/v1/shipments/{shipment_id}/resend \
 - 仮置き: 認証は session token + cookie を採用（JWT / OAuth / Magic Link は未実装）。
 - 仮置き: ダウンロード回数制御は shipment 単位（`download_events` の success件数）です。
 - 仮置き: `download_events.ip_hash` にはIP平文ではなくSHA-256 hashを保存します。
-- 未実装: メール再送API、バウンス処理、SNS連携。
+- 仮置き: recipient の最新通知状態は「最新(created_at desc, id desc)の notification_event」で判定します。
+- 仮置き: recipient.status の自動更新（download成功時の downloaded 遷移）は未対応です。
+- TODO: 将来PRで download成功時に recipients.status 更新を導入し、状態整合性を自動化する。
+- 未実装: バウンス処理、SNS連携。
 - TODO: 現在の store は hand-rolled 実装です。次PRで sqlc generated code に置き換える予定です。

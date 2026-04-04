@@ -41,10 +41,11 @@ type ListShipmentsOutput struct {
 }
 
 type ShipmentRecipientDownloadView struct {
-	RecipientID    uuid.UUID  `json:"recipient_id"`
-	Email          string     `json:"email"`
-	DownloadCount  int32      `json:"download_count"`
-	LastDownloadAt *time.Time `json:"last_download_at,omitempty"`
+	RecipientID     uuid.UUID  `json:"recipient_id"`
+	Email           string     `json:"email"`
+	DownloadCount   int32      `json:"download_count"`
+	FirstDownloadAt *time.Time `json:"first_download_at,omitempty"`
+	LastDownloadAt  *time.Time `json:"last_download_at,omitempty"`
 }
 
 type ShipmentDetailFileView struct {
@@ -66,6 +67,57 @@ type ShipmentDetailOutput struct {
 	Files                   []ShipmentDetailFileView        `json:"files"`
 	Recipients              []CreateShipmentRecipientView   `json:"recipients"`
 	RecipientDownloadEvents []ShipmentRecipientDownloadView `json:"recipient_downloads"`
+	NotificationSummary     ShipmentNotificationSummaryView `json:"notification_summary"`
+	RecipientSummaries      []ShipmentRecipientSummaryView  `json:"recipient_summaries"`
+}
+
+type ShipmentNotificationSummaryView struct {
+	TotalNotifications int64      `json:"total_notifications"`
+	QueuedCount        int32      `json:"queued_count"`
+	SentCount          int32      `json:"sent_count"`
+	FailedCount        int32      `json:"failed_count"`
+	LastNotificationAt *time.Time `json:"last_notification_at,omitempty"`
+}
+
+type ShipmentRecipientSummaryView struct {
+	RecipientID            uuid.UUID  `json:"recipient_id"`
+	Email                  string     `json:"email"`
+	RecipientStatus        string     `json:"recipient_status"`
+	NotificationCount      int32      `json:"notification_count"`
+	LastNotificationStatus *string    `json:"last_notification_status,omitempty"`
+	LastNotificationType   *string    `json:"last_notification_type,omitempty"`
+	LastNotifiedAt         *time.Time `json:"last_notified_at,omitempty"`
+	FirstDownloadAt        *time.Time `json:"first_download_at,omitempty"`
+	LastDownloadAt         *time.Time `json:"last_download_at,omitempty"`
+	DownloadCount          int32      `json:"download_count"`
+	HasDownloaded          bool       `json:"has_downloaded"`
+}
+
+type ListShipmentNotificationsInput struct {
+	OwnerUserID uuid.UUID
+	ShipmentID  uuid.UUID
+	Limit       int32
+	Offset      int32
+}
+
+type ShipmentNotificationEventView struct {
+	NotificationEventID int64      `json:"notification_event_id"`
+	RecipientID         uuid.UUID  `json:"recipient_id"`
+	RecipientEmail      string     `json:"recipient_email"`
+	EventType           string     `json:"event_type"`
+	Status              string     `json:"status"`
+	ErrorMessage        *string    `json:"error_message,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	QueuedAt            *time.Time `json:"queued_at,omitempty"`
+	SentAt              *time.Time `json:"sent_at,omitempty"`
+	FailedAt            *time.Time `json:"failed_at,omitempty"`
+}
+
+type ListShipmentNotificationsOutput struct {
+	Items  []ShipmentNotificationEventView `json:"items"`
+	Limit  int32                           `json:"limit"`
+	Offset int32                           `json:"offset"`
+	Total  int64                           `json:"total"`
 }
 
 func (s *ShipmentService) ListShipmentsByUser(ctx context.Context, in ShipmentListInput) (ListShipmentsOutput, error) {
@@ -135,6 +187,14 @@ func (s *ShipmentService) GetShipmentDetailByUser(ctx context.Context, ownerUser
 	if err != nil {
 		return ShipmentDetailOutput{}, fmt.Errorf("get recipient download stats by shipment: %w", err)
 	}
+	notificationEvents, err := s.Store.GetNotificationEventsByShipmentID(ctx, shipmentID)
+	if err != nil {
+		return ShipmentDetailOutput{}, fmt.Errorf("get notification events by shipment: %w", err)
+	}
+	recipientNotificationStats, err := s.Store.GetRecipientNotificationStatsByShipmentID(ctx, shipmentID)
+	if err != nil {
+		return ShipmentDetailOutput{}, fmt.Errorf("get recipient notification stats by shipment: %w", err)
+	}
 
 	out := ShipmentDetailOutput{
 		ID:                      shipment.ID,
@@ -148,6 +208,7 @@ func (s *ShipmentService) GetShipmentDetailByUser(ctx context.Context, ownerUser
 		Files:                   make([]ShipmentDetailFileView, 0, len(files)),
 		Recipients:              make([]CreateShipmentRecipientView, 0, len(recipients)),
 		RecipientDownloadEvents: make([]ShipmentRecipientDownloadView, 0, len(recipientStats)),
+		RecipientSummaries:      make([]ShipmentRecipientSummaryView, 0, len(recipients)),
 	}
 	for _, f := range files {
 		out.Files = append(out.Files, ShipmentDetailFileView{ID: f.ID, FileName: f.OriginalName, Size: f.SizeBytes})
@@ -157,16 +218,123 @@ func (s *ShipmentService) GetShipmentDetailByUser(ctx context.Context, ownerUser
 	}
 	for _, item := range recipientStats {
 		out.RecipientDownloadEvents = append(out.RecipientDownloadEvents, ShipmentRecipientDownloadView{
-			RecipientID:    item.RecipientID,
-			Email:          item.Email,
-			DownloadCount:  item.DownloadCount,
-			LastDownloadAt: item.LastDownloadAt,
+			RecipientID:     item.RecipientID,
+			Email:           item.Email,
+			DownloadCount:   item.DownloadCount,
+			FirstDownloadAt: item.FirstDownloadAt,
+			LastDownloadAt:  item.LastDownloadAt,
 		})
 		if item.LastDownloadAt != nil && (out.LastDownloadAt == nil || item.LastDownloadAt.After(*out.LastDownloadAt)) {
 			out.LastDownloadAt = item.LastDownloadAt
 		}
 	}
+	// 通知サマリはイベント履歴をそのまま集計する（仮置き: 再送判断しやすさを優先）。
+	for _, ev := range notificationEvents {
+		switch ev.Status {
+		case "queued":
+			out.NotificationSummary.QueuedCount++
+		case "sent":
+			out.NotificationSummary.SentCount++
+		case "failed":
+			out.NotificationSummary.FailedCount++
+		}
+		if out.NotificationSummary.LastNotificationAt == nil || ev.CreatedAt.After(*out.NotificationSummary.LastNotificationAt) {
+			ts := ev.CreatedAt
+			out.NotificationSummary.LastNotificationAt = &ts
+		}
+	}
+	out.NotificationSummary.TotalNotifications = int64(len(notificationEvents))
+
+	// recipient単位で通知/受領を突き合わせるため、まずは map 化して O(1) で引けるようにする。
+	downloadStatByRecipient := make(map[uuid.UUID]store.RecipientDownloadStat, len(recipientStats))
+	for _, st := range recipientStats {
+		downloadStatByRecipient[st.RecipientID] = st
+	}
+	notificationStatByRecipient := make(map[uuid.UUID]store.RecipientNotificationStat, len(recipientNotificationStats))
+	for _, st := range recipientNotificationStats {
+		notificationStatByRecipient[st.RecipientID] = st
+	}
+	for _, rc := range recipients {
+		// 仮置き: recipient.status は DB値をそのまま返し、受領有無は has_downloaded で補完する。
+		downloadStat := downloadStatByRecipient[rc.ID]
+		notificationStat := notificationStatByRecipient[rc.ID]
+		out.RecipientSummaries = append(out.RecipientSummaries, ShipmentRecipientSummaryView{
+			RecipientID:            rc.ID,
+			Email:                  rc.Email,
+			RecipientStatus:        rc.Status,
+			NotificationCount:      notificationStat.NotificationCount,
+			LastNotificationStatus: notificationStat.LastNotificationStatus,
+			LastNotificationType:   notificationStat.LastNotificationType,
+			LastNotifiedAt:         notificationStat.LastNotificationAt,
+			FirstDownloadAt:        downloadStat.FirstDownloadAt,
+			LastDownloadAt:         downloadStat.LastDownloadAt,
+			DownloadCount:          downloadStat.DownloadCount,
+			HasDownloaded:          downloadStat.DownloadCount > 0,
+		})
+	}
 	return out, nil
+}
+
+func (s *ShipmentService) ListShipmentNotificationsByUser(ctx context.Context, in ListShipmentNotificationsInput) (ListShipmentNotificationsOutput, error) {
+	if in.OwnerUserID == uuid.Nil {
+		return ListShipmentNotificationsOutput{}, &APIError{Status: 401, Code: "unauthorized", Message: "ログインが必要です"}
+	}
+	if in.Limit <= 0 {
+		in.Limit = defaultShipmentListLimit
+	}
+	if in.Limit > maxShipmentListLimit {
+		return ListShipmentNotificationsOutput{}, &APIError{Status: 400, Code: "invalid_limit", Message: "limit が上限を超えています"}
+	}
+	if in.Offset < 0 {
+		return ListShipmentNotificationsOutput{}, &APIError{Status: 400, Code: "invalid_offset", Message: "offset が不正です"}
+	}
+	shipment, err := s.Store.GetShipment(ctx, in.ShipmentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ListShipmentNotificationsOutput{}, &APIError{Status: 404, Code: "shipment_not_found", Message: "shipment が見つかりません"}
+		}
+		return ListShipmentNotificationsOutput{}, fmt.Errorf("get shipment: %w", err)
+	}
+	if shipment.OwnerUserID == nil || *shipment.OwnerUserID != in.OwnerUserID {
+		return ListShipmentNotificationsOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "他ユーザーの shipment にはアクセスできません"}
+	}
+	rows, err := s.Store.ListNotificationEventsByShipmentID(ctx, in.ShipmentID, in.Limit, in.Offset)
+	if err != nil {
+		return ListShipmentNotificationsOutput{}, fmt.Errorf("list notification events by shipment id: %w", err)
+	}
+	total, err := s.Store.CountNotificationEventsByShipmentID(ctx, in.ShipmentID)
+	if err != nil {
+		return ListShipmentNotificationsOutput{}, fmt.Errorf("count notification events by shipment id: %w", err)
+	}
+	out := ListShipmentNotificationsOutput{
+		Items:  make([]ShipmentNotificationEventView, 0, len(rows)),
+		Limit:  in.Limit,
+		Offset: in.Offset,
+		Total:  total,
+	}
+	for _, row := range rows {
+		out.Items = append(out.Items, ShipmentNotificationEventView{
+			NotificationEventID: row.ID,
+			RecipientID:         row.RecipientID,
+			RecipientEmail:      row.RecipientEmail,
+			EventType:           row.EventType,
+			Status:              row.Status,
+			ErrorMessage:        row.ErrorMessage,
+			CreatedAt:           row.CreatedAt,
+			QueuedAt:            row.QueuedAt,
+			SentAt:              row.SentAt,
+			FailedAt:            row.FailedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *ShipmentService) ListShipmentRecipientsByUser(ctx context.Context, ownerUserID uuid.UUID, shipmentID uuid.UUID) ([]ShipmentRecipientSummaryView, error) {
+	detail, err := s.GetShipmentDetailByUser(ctx, ownerUserID, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	return detail.RecipientSummaries, nil
 }
 
 func (s *ShipmentService) DeleteShipmentByUser(ctx context.Context, ownerUserID uuid.UUID, shipmentID uuid.UUID) error {

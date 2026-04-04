@@ -41,6 +41,10 @@ type ShipmentStore interface {
 	CreateNotificationEvent(ctx context.Context, arg store.CreateNotificationEventParams) (store.NotificationEvent, error)
 	ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error)
 	CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
+	GetNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.NotificationEvent, error)
+	ListNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID, limit int32, offset int32) ([]store.NotificationEventListItem, error)
+	CountNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) (int64, error)
+	GetRecipientNotificationStatsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientNotificationStat, error)
 	GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error)
 	CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error)
 	DeleteShipment(ctx context.Context, shipmentID uuid.UUID) error
