@@ -19,6 +19,11 @@ type fakeShipmentStore struct {
 	finalizeErr   error
 	recipientsOut []store.Recipient
 	filesOut      []store.File
+	listOut       []store.ShipmentListItem
+	totalOut      int64
+	deleteErr     error
+	revokeErr     error
+	recipientStat []store.RecipientDownloadStat
 }
 
 type fakeMailQueue struct {
@@ -62,6 +67,24 @@ func (f *fakeShipmentStore) GetFilesByShipmentID(ctx context.Context, shipmentID
 
 func (f *fakeShipmentStore) GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.Recipient, error) {
 	return f.recipientsOut, nil
+}
+func (f *fakeShipmentStore) ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error) {
+	return f.listOut, nil
+}
+func (f *fakeShipmentStore) CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	return f.totalOut, nil
+}
+func (f *fakeShipmentStore) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error) {
+	return f.recipientStat, nil
+}
+func (f *fakeShipmentStore) CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error) {
+	return 0, nil
+}
+func (f *fakeShipmentStore) DeleteShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	return f.deleteErr
+}
+func (f *fakeShipmentStore) RevokeAccessTokensByShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	return f.revokeErr
 }
 
 func TestCreateShipment_URLShared_Success(t *testing.T) {
@@ -164,3 +187,44 @@ func TestCreateShipment_StoreConflict(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+func TestListShipmentsByUser_Success(t *testing.T) {
+	userID := uuid.New()
+	svc := &ShipmentService{Store: &fakeShipmentStore{
+		listOut:  []store.ShipmentListItem{{ID: uuid.New(), Title: "件名", ShareMode: "url_shared", Status: "sent", MaxDownloads: 10, FileCount: 2, DownloadCount: 1}},
+		totalOut: 1,
+	}}
+	out, err := svc.ListShipmentsByUser(context.Background(), ShipmentListInput{OwnerUserID: userID, Limit: 20, Offset: 0})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(out.Items) != 1 || out.Items[0].Subject != "件名" || out.Total != 1 {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+}
+
+func TestGetShipmentDetailByUser_Forbidden(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	st := &fakeShipmentStore{
+		shipment: store.Shipment{ID: uuid.New(), OwnerUserID: &ownerID, ShareMode: "url_shared", Status: "sent"},
+	}
+	st.shipment.ID = shipID
+	svc := &ShipmentService{Store: st}
+	_, err := svc.GetShipmentDetailByUser(context.Background(), uuid.New(), shipID)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Fatalf("expected 403 got=%v", err)
+	}
+}
+
+func TestDeleteShipmentByUser_Success(t *testing.T) {
+	ownerID := uuid.New()
+	shipID := uuid.New()
+	svc := &ShipmentService{Store: &fakeShipmentStore{
+		shipment: store.Shipment{ID: shipID, OwnerUserID: &ownerID, Status: "sent"},
+	}}
+	if err := svc.DeleteShipmentByUser(context.Background(), ownerID, shipID); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+}

@@ -40,6 +40,24 @@ func (f *fakeShipmentSvcStore) GetFilesByShipmentID(ctx context.Context, shipmen
 func (f *fakeShipmentSvcStore) GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.Recipient, error) {
 	return []store.Recipient{{ID: uuid.New(), Email: "a@example.com", Status: "pending"}}, nil
 }
+func (f *fakeShipmentSvcStore) ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error) {
+	return []store.ShipmentListItem{{ID: uuid.New(), Title: "件名", ShareMode: "url_shared", Status: "sent", MaxDownloads: 10, FileCount: 1}}, nil
+}
+func (f *fakeShipmentSvcStore) CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	return 1, nil
+}
+func (f *fakeShipmentSvcStore) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error) {
+	return nil, nil
+}
+func (f *fakeShipmentSvcStore) CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error) {
+	return 0, nil
+}
+func (f *fakeShipmentSvcStore) DeleteShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	return nil
+}
+func (f *fakeShipmentSvcStore) RevokeAccessTokensByShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	return nil
+}
 
 func TestCreateShipmentHandler_Success(t *testing.T) {
 	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
@@ -80,8 +98,21 @@ func TestGetShipmentHandler_Success(t *testing.T) {
 	r := chi.NewRouter()
 	r.Get("/v1/shipments/{id}", h.GetShipment)
 	req := httptest.NewRequest(http.MethodGet, "/v1/shipments/"+uuid.NewString(), nil)
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestListShipmentsHandler_Pagination(t *testing.T) {
+	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
+	h := ShipmentHandler{Service: svc}
+	req := httptest.NewRequest(http.MethodGet, "/v1/shipments?limit=10&offset=0", nil)
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	h.ListShipments(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}

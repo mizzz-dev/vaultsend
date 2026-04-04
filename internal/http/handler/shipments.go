@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,6 +94,11 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
@@ -100,12 +106,68 @@ func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := h.Service.GetShipmentDetail(r.Context(), id)
+	out, err := h.Service.GetShipmentDetailByUser(r.Context(), user.ID, id)
 	if err != nil {
 		h.writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
+}
+
+func (h ShipmentHandler) ListShipments(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	limit := int32(20)
+	offset := int32(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			render.Error(w, http.StatusBadRequest, "invalid_limit", "limit が不正です", chimw.GetReqID(r.Context()))
+			return
+		}
+		limit = int32(v)
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			render.Error(w, http.StatusBadRequest, "invalid_offset", "offset が不正です", chimw.GetReqID(r.Context()))
+			return
+		}
+		offset = int32(v)
+	}
+
+	out, err := h.Service.ListShipmentsByUser(r.Context(), service.ShipmentListInput{
+		OwnerUserID: user.ID,
+		Limit:       limit,
+		Offset:      offset,
+	})
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
+}
+
+func (h ShipmentHandler) DeleteShipment(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_shipment_id", "shipment id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+	if err := h.Service.DeleteShipmentByUser(r.Context(), user.ID, id); err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (h ShipmentHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {

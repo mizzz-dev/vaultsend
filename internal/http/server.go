@@ -36,7 +36,12 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 		r.Post("/uploads", uploadHandler.CreateUpload)
 		r.Post("/uploads/{id}/complete", uploadHandler.CompleteUpload)
 		r.Post("/shipments", shipmentHandler.CreateShipment)
-		r.Get("/shipments/{id}", shipmentHandler.GetShipment)
+		r.Group(func(r chi.Router) {
+			r.Use(appmw.RequireAuth(authSvc))
+			r.Get("/shipments", shipmentHandler.ListShipments)
+			r.Get("/shipments/{id}", shipmentHandler.GetShipment)
+			r.Delete("/shipments/{id}", shipmentHandler.DeleteShipment)
+		})
 		r.Get("/access/{token}", accessHandler.InspectAccess)
 		r.Post("/access/{token}/verify", accessHandler.VerifyAccess)
 		r.Get("/files/{id}/download-url", accessHandler.GenerateDownloadURL)

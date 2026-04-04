@@ -36,6 +36,12 @@ type ShipmentStore interface {
 	FinalizeShipment(ctx context.Context, arg store.FinalizeShipmentParams) (store.ShipmentFinalizeResult, error)
 	GetFilesByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.File, error)
 	GetRecipientsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.Recipient, error)
+	ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error)
+	CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
+	GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error)
+	CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error)
+	DeleteShipment(ctx context.Context, shipmentID uuid.UUID) error
+	RevokeAccessTokensByShipment(ctx context.Context, shipmentID uuid.UUID) error
 }
 
 type ShipmentService struct {
@@ -82,18 +88,6 @@ type CreateShipmentFileView struct {
 	ID           uuid.UUID `json:"id"`
 	OriginalName string    `json:"original_name"`
 	SizeBytes    int64     `json:"size_bytes"`
-}
-
-type ShipmentDetailOutput struct {
-	ID               uuid.UUID                     `json:"id"`
-	Status           string                        `json:"status"`
-	ShareMode        string                        `json:"share_mode"`
-	Subject          string                        `json:"subject"`
-	Message          *string                       `json:"message,omitempty"`
-	ExpiresAt        time.Time                     `json:"expires_at"`
-	MaxDownloadCount int32                         `json:"max_download_count"`
-	Files            []CreateShipmentFileView      `json:"files"`
-	Recipients       []CreateShipmentRecipientView `json:"recipients"`
 }
 
 func (s *ShipmentService) CreateShipment(ctx context.Context, in CreateShipmentInput) (CreateShipmentOutput, error) {
@@ -157,43 +151,6 @@ func (s *ShipmentService) CreateShipment(ctx context.Context, in CreateShipmentI
 				return CreateShipmentOutput{}, fmt.Errorf("enqueue mail notification: %w", err)
 			}
 		}
-	}
-	return out, nil
-}
-
-func (s *ShipmentService) GetShipmentDetail(ctx context.Context, shipmentID uuid.UUID) (ShipmentDetailOutput, error) {
-	shipment, err := s.Store.GetShipment(ctx, shipmentID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return ShipmentDetailOutput{}, &APIError{Status: 404, Code: "shipment_not_found", Message: "shipment が見つかりません"}
-		}
-		return ShipmentDetailOutput{}, fmt.Errorf("get shipment: %w", err)
-	}
-	files, err := s.Store.GetFilesByShipmentID(ctx, shipmentID)
-	if err != nil {
-		return ShipmentDetailOutput{}, fmt.Errorf("get files by shipment: %w", err)
-	}
-	recipients, err := s.Store.GetRecipientsByShipmentID(ctx, shipmentID)
-	if err != nil {
-		return ShipmentDetailOutput{}, fmt.Errorf("get recipients by shipment: %w", err)
-	}
-
-	out := ShipmentDetailOutput{
-		ID:               shipment.ID,
-		Status:           shipment.Status,
-		ShareMode:        normalizeShareModeForResponse(shipment.ShareMode),
-		Subject:          shipment.Title,
-		Message:          shipment.Message,
-		ExpiresAt:        shipment.ExpiresAt,
-		MaxDownloadCount: shipment.MaxDownloads,
-		Files:            make([]CreateShipmentFileView, 0, len(files)),
-		Recipients:       make([]CreateShipmentRecipientView, 0, len(recipients)),
-	}
-	for _, f := range files {
-		out.Files = append(out.Files, CreateShipmentFileView{ID: f.ID, OriginalName: f.OriginalName, SizeBytes: f.SizeBytes})
-	}
-	for _, r := range recipients {
-		out.Recipients = append(out.Recipients, CreateShipmentRecipientView{ID: r.ID, Email: r.Email, Status: r.Status})
 	}
 	return out, nil
 }

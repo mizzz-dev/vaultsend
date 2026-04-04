@@ -271,6 +271,27 @@ type DownloadEvent struct {
 	CreatedAt   time.Time
 }
 
+type ShipmentListItem struct {
+	ID               uuid.UUID
+	Title            string
+	ShareMode        string
+	Status           string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	MaxDownloads     int32
+	FileCount        int32
+	DownloadCount    int32
+	LastDownloadAt   *time.Time
+	CurrentDownloads int32
+}
+
+type RecipientDownloadStat struct {
+	RecipientID    uuid.UUID
+	Email          string
+	DownloadCount  int32
+	LastDownloadAt *time.Time
+}
+
 func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
 	return q.createFile(ctx, q.db, arg)
 }
@@ -486,6 +507,120 @@ func (q *Queries) CountDownloadEventsByShipment(ctx context.Context, shipmentID 
 		return 0, err
 	}
 	return count, nil
+}
+
+func (q *Queries) ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]ShipmentListItem, error) {
+	const query = `
+SELECT
+    s.id,
+    s.title,
+    s.share_mode,
+    s.status,
+    s.created_at,
+    s.expires_at,
+    s.max_downloads,
+    COUNT(DISTINCT f.id)::int4 AS file_count,
+    COUNT(de.id) FILTER (WHERE de.result = 'success')::int4 AS download_count,
+    MAX(de.created_at) FILTER (WHERE de.result = 'success') AS last_download_at,
+    s.current_downloads
+FROM shipments s
+LEFT JOIN files f ON f.shipment_id = s.id
+LEFT JOIN download_events de ON de.shipment_id = s.id
+WHERE s.owner_user_id = $1
+GROUP BY s.id
+ORDER BY s.created_at DESC, s.id DESC
+LIMIT $2 OFFSET $3`
+	rows, err := q.db.Query(ctx, query, ownerUserID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ShipmentListItem, 0, limit)
+	for rows.Next() {
+		var item ShipmentListItem
+		if err := rows.Scan(
+			&item.ID,
+			&item.Title,
+			&item.ShareMode,
+			&item.Status,
+			&item.CreatedAt,
+			&item.ExpiresAt,
+			&item.MaxDownloads,
+			&item.FileCount,
+			&item.DownloadCount,
+			&item.LastDownloadAt,
+			&item.CurrentDownloads,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (q *Queries) CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	const query = `SELECT COUNT(1) FROM shipments WHERE owner_user_id = $1`
+	var total int64
+	if err := q.db.QueryRow(ctx, query, ownerUserID).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (q *Queries) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]RecipientDownloadStat, error) {
+	const query = `
+SELECT
+    r.id,
+    r.email,
+    COUNT(de.id) FILTER (WHERE de.result = 'success')::int4 AS download_count,
+    MAX(de.created_at) FILTER (WHERE de.result = 'success') AS last_download_at
+FROM recipients r
+LEFT JOIN download_events de ON de.recipient_id = r.id
+WHERE r.shipment_id = $1
+GROUP BY r.id
+ORDER BY r.created_at ASC`
+	rows, err := q.db.Query(ctx, query, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := make([]RecipientDownloadStat, 0)
+	for rows.Next() {
+		var item RecipientDownloadStat
+		if err := rows.Scan(&item.RecipientID, &item.Email, &item.DownloadCount, &item.LastDownloadAt); err != nil {
+			return nil, err
+		}
+		stats = append(stats, item)
+	}
+	return stats, rows.Err()
+}
+
+func (q *Queries) DeleteShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	const query = `
+UPDATE shipments
+SET status = 'deleted',
+    deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1
+  AND status NOT IN ('deleted', 'revoked')`
+	cmd, err := q.db.Exec(ctx, query, shipmentID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (q *Queries) RevokeAccessTokensByShipment(ctx context.Context, shipmentID uuid.UUID) error {
+	const query = `
+UPDATE access_tokens
+SET status = 'revoked',
+    revoked_at = COALESCE(revoked_at, now())
+WHERE shipment_id = $1
+  AND status <> 'revoked'`
+	_, err := q.db.Exec(ctx, query, shipmentID)
+	return err
 }
 
 type CreateDownloadEventParams struct {
