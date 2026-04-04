@@ -7,6 +7,7 @@ Secure Send MVP のバックエンド土台（Go + chi + pgx + sqlc）です。
 ```text
 cmd/api
 cmd/worker
+cmd/cleanup-worker
 internal/config
 internal/http
 internal/http/handler
@@ -47,6 +48,9 @@ export RATE_LIMIT_RPS=100
 export VERIFY_MAX_ATTEMPTS=5
 export DOWNLOAD_RATE_LIMIT=10
 export PRESIGNED_URL_TTL=60
+export CLEANUP_INTERVAL_SEC=180
+export CLEANUP_BATCH_SIZE=100
+export DELETION_GRACE_PERIOD_HOURS=24
 
 # auth / session（MVP最小実装）
 export SESSION_TTL_HOURS=168
@@ -71,6 +75,12 @@ make run
 
 ```bash
 make run-worker
+```
+
+### 6) cleanup worker 起動（別ターミナル）
+
+```bash
+make run-cleanup-worker
 ```
 
 ## メール送信フロー（SES + SQS）
@@ -287,6 +297,26 @@ make migrate-down
 - `DELETE /v1/shipments/{id}`
   - ログインユーザー本人の shipment のみ論理削除（`status=deleted`）
   - 関連する access token を revoke し、以後ダウンロード不可
+
+## cleanup worker（期限切れ/削除データの自動クリーンアップ）
+
+- 目的:
+  - 期限切れ shipment の `status` を自動で `expired` に更新
+  - 論理削除済み shipment を猶予期間経過後に物理削除
+  - 紐づく S3 オブジェクトを削除し、DB レコードも cascade で削除
+- 対象条件:
+  1. 期限切れ: `expires_at < now` かつ `status NOT IN ('deleted','expired','revoked')`
+  2. 物理削除対象: `status = 'deleted'` かつ `deleted_at < now - grace_period`
+- 物理削除対象テーブル:
+  - `shipments`, `files`, `recipients`, `access_tokens`, `download_events`, `notification_events`
+- 安全対策:
+  - `CLEANUP_BATCH_SIZE` で 1 回あたりの最大処理件数を制限
+  - shipment 単位でエラーをログ出力し、他 shipment の処理を継続
+  - S3 delete は短いリトライ（デフォルト3回）
+- 仮置き値:
+  - `CLEANUP_INTERVAL_SEC=180`（3分）
+  - `CLEANUP_BATCH_SIZE=100`
+  - `DELETION_GRACE_PERIOD_HOURS=24`
 
 ### 再送API request / response 例
 

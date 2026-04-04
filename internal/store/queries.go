@@ -845,6 +845,99 @@ WHERE id = $1
 	return nil
 }
 
+func (q *Queries) ListExpiredShipments(ctx context.Context, now time.Time, limit int32) ([]Shipment, error) {
+	const query = `
+SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+       current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
+FROM shipments
+WHERE expires_at < $1
+  AND status NOT IN ('deleted', 'expired', 'revoked')
+ORDER BY expires_at ASC
+LIMIT $2`
+	rows, err := q.db.Query(ctx, query, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]Shipment, 0, limit)
+	for rows.Next() {
+		var s Shipment
+		if err := scanShipment(rows, &s); err != nil {
+			return nil, err
+		}
+		items = append(items, s)
+	}
+	return items, rows.Err()
+}
+
+func (q *Queries) MarkShipmentExpired(ctx context.Context, shipmentID uuid.UUID, now time.Time) error {
+	const query = `
+UPDATE shipments
+SET status = 'expired',
+    updated_at = $2
+WHERE id = $1
+  AND status NOT IN ('deleted', 'expired', 'revoked')`
+	cmd, err := q.db.Exec(ctx, query, shipmentID, now)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (q *Queries) ListDeletedShipmentsForCleanup(ctx context.Context, deletedBefore time.Time, limit int32) ([]Shipment, error) {
+	const query = `
+SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+       current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
+FROM shipments
+WHERE status = 'deleted'
+  AND deleted_at IS NOT NULL
+  AND deleted_at < $1
+ORDER BY deleted_at ASC
+LIMIT $2`
+	rows, err := q.db.Query(ctx, query, deletedBefore, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]Shipment, 0, limit)
+	for rows.Next() {
+		var s Shipment
+		if err := scanShipment(rows, &s); err != nil {
+			return nil, err
+		}
+		items = append(items, s)
+	}
+	return items, rows.Err()
+}
+
+func (q *Queries) DeleteShipmentCascade(ctx context.Context, shipmentID uuid.UUID) error {
+	tx, err := q.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	statements := []string{
+		`DELETE FROM notification_events WHERE shipment_id = $1`,
+		`DELETE FROM download_events WHERE shipment_id = $1`,
+		`DELETE FROM access_tokens WHERE shipment_id = $1`,
+		`DELETE FROM recipients WHERE shipment_id = $1`,
+		`DELETE FROM files WHERE shipment_id = $1`,
+		`DELETE FROM shipments WHERE id = $1`,
+	}
+	for _, stmt := range statements {
+		if _, err := tx.Exec(ctx, stmt, shipmentID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (q *Queries) RevokeAccessTokensByShipment(ctx context.Context, shipmentID uuid.UUID) error {
 	const query = `
 UPDATE access_tokens
