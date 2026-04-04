@@ -47,6 +47,12 @@ export RATE_LIMIT_RPS=100
 export VERIFY_MAX_ATTEMPTS=5
 export DOWNLOAD_RATE_LIMIT=10
 export PRESIGNED_URL_TTL=60
+
+# auth / session（MVP最小実装）
+export SESSION_TTL_HOURS=168
+export COOKIE_DOMAIN=''
+export COOKIE_SECURE=false
+export COOKIE_SAMESITE='lax'
 ```
 
 ### 3) マイグレーション適用
@@ -131,6 +137,30 @@ curl -sS -X POST http://localhost:8080/v1/shipments \
 curl -sS http://localhost:8080/v1/shipments/{shipment_id}
 ```
 
+
+### auth (register/login/logout/me)
+
+```bash
+# register
+curl -i -sS -X POST http://localhost:8080/v1/auth/register   -H 'Content-Type: application/json'   -d '{
+    "email":"user@example.com",
+    "password":"password123",
+    "display_name":"Taro"
+  }'
+
+# login
+curl -i -sS -X POST http://localhost:8080/v1/auth/login   -H 'Content-Type: application/json'   -c /tmp/vs-cookie.txt   -d '{
+    "email":"user@example.com",
+    "password":"password123"
+  }'
+
+# me
+curl -sS http://localhost:8080/v1/auth/me -b /tmp/vs-cookie.txt
+
+# logout
+curl -i -sS -X POST http://localhost:8080/v1/auth/logout -b /tmp/vs-cookie.txt
+```
+
 ### access verify / download
 
 ```bash
@@ -145,6 +175,27 @@ curl -sS -X POST http://localhost:8080/v1/access/{access_token}/verify \
 # 3) ファイルの短命ダウンロードURL発行（TTL は PRESIGNED_URL_TTL で設定）
 curl -sS "http://localhost:8080/v1/files/{file_id}/download-url?access_token={access_token}"
 ```
+
+
+## 認証フロー（MVP最小実装）
+
+- `POST /v1/auth/register`
+  - email + password でユーザー作成し、同時に session cookie を発行します。
+- `POST /v1/auth/login`
+  - email + password を検証し、session cookie を再発行します。
+- `POST /v1/auth/logout`
+  - session を `revoked_at` 更新して失効し、cookieを削除します。
+- `GET /v1/auth/me`
+  - cookie の session token を検証し、ログイン中ユーザー情報を返します。
+
+## 匿名利用とログイン利用の挙動差
+
+- 匿名利用（cookieなし）
+  - `POST /v1/uploads` / `POST /v1/shipments` は従来どおり利用可能です。
+  - `owner_user_id` は `NULL` のまま扱います。
+- ログイン利用（cookieあり）
+  - `POST /v1/uploads` と `POST /v1/shipments` で `owner_user_id` をサーバー側で自動反映します。
+  - shipment作成時に、対象ファイルの `owner_user_id` がログインユーザーと一致しない場合は409で拒否します。
 
 ## レート制限 / セキュリティ仕様（MVP仮置き）
 
@@ -198,6 +249,7 @@ make migrate-down
 - 仮置き: `POST /v1/uploads` は shipment 未指定時に匿名 draft shipment を自動作成します。
 - 仮置き: `share_mode=public_link` は互換入力として受け付け、内部では `url_shared` に正規化します。
 - 仮置き: レート制限は in-memory 実装です（将来 Redis 置換予定）。
+- 仮置き: 認証は session token + cookie を採用（JWT / OAuth / Magic Link は未実装）。
 - 仮置き: ダウンロード回数制御は shipment 単位（`download_events` の success件数）です。
 - 仮置き: `download_events.ip_hash` にはIP平文ではなくSHA-256 hashを保存します。
 - 未実装: メール再送API、バウンス処理、SNS連携。

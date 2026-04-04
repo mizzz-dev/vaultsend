@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/example/vaultsend/internal/storage"
 	"github.com/example/vaultsend/internal/store"
@@ -16,12 +17,15 @@ import (
 	"github.com/google/uuid"
 )
 
-type handlerStore struct{}
+type handlerStore struct {
+	lastOwnerUserID *uuid.UUID
+}
 
 func (h *handlerStore) CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error) {
 	return store.Shipment{ID: uuid.New()}, nil
 }
 func (h *handlerStore) CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error) {
+	h.lastOwnerUserID = arg.OwnerUserID
 	return store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID}, nil
 }
 func (h *handlerStore) GetUploadSessionByID(ctx context.Context, id uuid.UUID) (store.UploadSession, error) {
@@ -74,5 +78,23 @@ func TestCompleteUpload_AlreadyCompleted(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateUpload_WithAuthOwnerUserID(t *testing.T) {
+	store := &handlerStore{}
+	svc := &service.UploadService{Store: store, ObjectStore: &handlerObj{}, S3Bucket: "bucket"}
+	h := UploadHandler{Service: svc}
+	body := []byte(`{"file_name":"a.txt","file_size":100,"content_type":"text/plain"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/uploads", bytes.NewReader(body))
+	userID := uuid.New()
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: userID, Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	h.CreateUpload(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if store.lastOwnerUserID == nil || *store.lastOwnerUserID != userID {
+		t.Fatal("owner_user_id should be propagated")
 	}
 }

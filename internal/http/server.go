@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService) stdhttp.Handler {
+func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService, authSvc *service.AuthService) stdhttp.Handler {
 	r := chi.NewRouter()
 	rateLimiter := appmw.NewInMemoryRateLimiter()
 
@@ -24,10 +24,12 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 		PerMinuteLimit: cfg.RateLimitRPS,
 		VerifyLimit:    max(10, cfg.VerifyMaxAttempts*2),
 	}))
+	r.Use(appmw.OptionalAuth(authSvc))
 
 	uploadHandler := handler.UploadHandler{Service: uploadSvc}
 	shipmentHandler := handler.ShipmentHandler{Service: shipmentSvc}
 	accessHandler := handler.AccessHandler{Service: accessSvc}
+	authHandler := handler.AuthHandler{Service: authSvc, CookieDomain: cfg.CookieDomain, CookieSecure: cfg.CookieSecure, CookieSameSite: cfg.CookieSameSite}
 
 	r.Get("/healthz", handler.Health)
 	r.Route("/v1", func(r chi.Router) {
@@ -38,7 +40,18 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 		r.Get("/access/{token}", accessHandler.InspectAccess)
 		r.Post("/access/{token}/verify", accessHandler.VerifyAccess)
 		r.Get("/files/{id}/download-url", accessHandler.GenerateDownloadURL)
+
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/register", authHandler.Register)
+			r.Post("/login", authHandler.Login)
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireAuth(authSvc))
+				r.Post("/logout", authHandler.Logout)
+				r.Get("/me", authHandler.Me)
+			})
+		})
 	})
 
+	_ = queries
 	return r
 }

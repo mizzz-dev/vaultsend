@@ -60,6 +60,11 @@ func main() {
 	guard.VerifyMaxAttempts = cfg.VerifyMaxAttempts
 	guard.DownloadLimit = cfg.DownloadRateLimit
 
+	authSvc := &service.AuthService{
+		Store:      queries,
+		SessionTTL: time.Duration(cfg.SessionTTLHours) * time.Hour,
+	}
+
 	accessSvc := &service.AccessService{
 		Store:          queries,
 		ObjectStore:    s3Store,
@@ -67,7 +72,7 @@ func main() {
 		Guard:          guard,
 	}
 
-	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc)
+	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {

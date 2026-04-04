@@ -9,13 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/example/vaultsend/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
-type fakeShipmentSvcStore struct{}
+type fakeShipmentSvcStore struct {
+	lastOwnerUserID *uuid.UUID
+}
 
 func (f *fakeShipmentSvcStore) GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error) {
 	return store.Shipment{ID: id, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC(), MaxDownloads: 10}, nil
@@ -28,6 +31,7 @@ func (f *fakeShipmentSvcStore) GetFilesByIDs(ctx context.Context, ids []uuid.UUI
 	return out, nil
 }
 func (f *fakeShipmentSvcStore) FinalizeShipment(ctx context.Context, arg store.FinalizeShipmentParams) (store.ShipmentFinalizeResult, error) {
+	f.lastOwnerUserID = arg.OwnerUserID
 	return store.ShipmentFinalizeResult{Shipment: store.Shipment{ID: arg.ShipmentID, Status: "sent", ExpiresAt: arg.ExpiresAt, MaxDownloads: arg.MaxDownloads}}, nil
 }
 func (f *fakeShipmentSvcStore) GetFilesByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.File, error) {
@@ -80,5 +84,27 @@ func TestGetShipmentHandler_Success(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateShipmentHandler_UsesAuthOwnerUserID(t *testing.T) {
+	st := &fakeShipmentSvcStore{}
+	svc := &service.ShipmentService{Store: st}
+	h := ShipmentHandler{Service: svc}
+	payload, _ := json.Marshal(map[string]any{
+		"file_ids":   []string{uuid.NewString()},
+		"subject":    "請求書",
+		"share_mode": "url_shared",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/shipments", bytes.NewReader(payload))
+	userID := uuid.New()
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: userID, Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	h.CreateShipment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if st.lastOwnerUserID == nil || *st.lastOwnerUserID != userID {
+		t.Fatal("owner_user_id should be set from auth")
 	}
 }
