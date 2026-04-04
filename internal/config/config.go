@@ -20,10 +20,12 @@ type Config struct {
 
 	// HTTPRequestTimeout はtimeout middlewareの既定値。
 	HTTPRequestTimeout time.Duration
+	UploadURLTTL       time.Duration
+	UploadPartSize     int32
+	UploadMaxFileSize  int64
+	UploadMaxParts     int
 }
 
-// Load は環境変数から設定値を読み込む。
-// 必須値が不足している場合は起動失敗とし、デプロイ時の設定漏れを早期検知する。
 func Load() (Config, error) {
 	cfg := Config{
 		AppEnv:             getEnv("APP_ENV", "local"),
@@ -34,6 +36,10 @@ func Load() (Config, error) {
 		SQSQueueURL:        os.Getenv("SQS_QUEUE_URL"),
 		SESFromEmail:       os.Getenv("SES_FROM_EMAIL"),
 		HTTPRequestTimeout: 30 * time.Second,
+		UploadURLTTL:       15 * time.Minute,
+		UploadPartSize:     8 * 1024 * 1024,
+		UploadMaxFileSize:  10 * 1024 * 1024 * 1024,
+		UploadMaxParts:     1000,
 	}
 
 	if v := os.Getenv("HTTP_REQUEST_TIMEOUT_SEC"); v != "" {
@@ -42,6 +48,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid HTTP_REQUEST_TIMEOUT_SEC: %q", v)
 		}
 		cfg.HTTPRequestTimeout = time.Duration(sec) * time.Second
+	}
+	if v := os.Getenv("UPLOAD_URL_TTL_SEC"); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil || sec <= 0 {
+			return Config{}, fmt.Errorf("invalid UPLOAD_URL_TTL_SEC: %q", v)
+		}
+		cfg.UploadURLTTL = time.Duration(sec) * time.Second
 	}
 
 	missing := make([]string, 0)
@@ -60,11 +73,9 @@ func Load() (Config, error) {
 	if cfg.SESFromEmail == "" {
 		missing = append(missing, "SES_FROM_EMAIL")
 	}
-
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required envs: %v", missing)
 	}
-
 	return cfg, nil
 }
 

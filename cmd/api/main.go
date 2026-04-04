@@ -9,8 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	awscfg "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/example/vaultsend/internal/config"
 	apphttp "github.com/example/vaultsend/internal/http"
+	"github.com/example/vaultsend/internal/service"
+	"github.com/example/vaultsend/internal/storage"
 	"github.com/example/vaultsend/internal/store"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,13 +34,26 @@ func main() {
 	}
 	defer pool.Close()
 
-	queries := store.New(pool)
-	handler := apphttp.NewServer(cfg, queries)
-	server := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
+	awsCfg, err := awscfg.LoadDefaultConfig(ctx, awscfg.WithRegion(cfg.AWSRegion))
+	if err != nil {
+		log.Fatalf("failed to load aws config: %v", err)
 	}
+
+	queries := store.New(pool)
+	s3Store := storage.NewS3ObjectStore(s3.NewFromConfig(awsCfg))
+	uploadSvc := &service.UploadService{
+		Store:               queries,
+		ObjectStore:         s3Store,
+		S3Bucket:            cfg.S3Bucket,
+		PartSizeBytes:       cfg.UploadPartSize,
+		UploadURLTTL:        cfg.UploadURLTTL,
+		UploadSessionTTL:    cfg.UploadURLTTL,
+		MaxFileSizeBytes:    cfg.UploadMaxFileSize,
+		MaxPresignedPartNum: cfg.UploadMaxParts,
+	}
+
+	handler := apphttp.NewServer(cfg, queries, uploadSvc)
+	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		log.Printf("api server starting env=%s port=%s", cfg.AppEnv, cfg.Port)
@@ -48,7 +65,6 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
