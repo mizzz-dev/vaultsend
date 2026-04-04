@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService, authSvc *service.AuthService) stdhttp.Handler {
+func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService, authSvc *service.AuthService, billingSvc *service.BillingService) stdhttp.Handler {
 	r := chi.NewRouter()
 	rateLimiter := appmw.NewInMemoryRateLimiter()
 
@@ -25,11 +25,13 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 		VerifyLimit:    max(10, cfg.VerifyMaxAttempts*2),
 	}))
 	r.Use(appmw.OptionalAuth(authSvc))
+	r.Use(appmw.OptionalPlan(billingSvc))
 
 	uploadHandler := handler.UploadHandler{Service: uploadSvc}
 	shipmentHandler := handler.ShipmentHandler{Service: shipmentSvc}
 	accessHandler := handler.AccessHandler{Service: accessSvc}
 	authHandler := handler.AuthHandler{Service: authSvc, CookieDomain: cfg.CookieDomain, CookieSecure: cfg.CookieSecure, CookieSameSite: cfg.CookieSameSite}
+	billingHandler := handler.BillingHandler{Service: billingSvc}
 
 	r.Get("/healthz", handler.Health)
 	r.Route("/v1", func(r chi.Router) {
@@ -58,6 +60,8 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 				r.Get("/me", authHandler.Me)
 			})
 		})
+		r.Post("/billing/checkout", billingHandler.CreateCheckout)
+		r.Post("/billing/webhook", billingHandler.Webhook)
 	})
 
 	_ = queries

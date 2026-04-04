@@ -41,6 +41,9 @@ export S3_BUCKET='vaultsend-local'
 export SQS_QUEUE_URL='https://sqs.ap-northeast-1.amazonaws.com/123456789012/vaultsend-local'
 export SES_FROM_EMAIL='noreply@example.com'
 export FRONTEND_URL='http://localhost:3000'
+export STRIPE_SECRET_KEY='sk_test_xxx'
+export STRIPE_WEBHOOK_SECRET='whsec_xxx'
+export STRIPE_PRICE_ID_PRO='price_xxx'
 
 # uploads 本実装向け（任意上書き）
 export UPLOAD_URL_TTL_SEC=900
@@ -250,6 +253,26 @@ make test
 make lint
 make sqlc-generate
 make migrate-down
+```
+
+## Billing（サブスクリプション）仕様
+
+- プラン
+  - `free`: 最大ファイルサイズ 1GB / 保存期間 3日 / 月間 shipment 50件まで
+  - `pro`: 最大ファイルサイズ 10GB / 保存期間 7日 / shipment 制限なし（MVP）
+- Checkout
+  - `POST /v1/billing/checkout`（ログイン必須）で Stripe Checkout Session URL を発行します。
+- Webhook
+  - `POST /v1/billing/webhook` で `customer.subscription.created|updated|deleted` を受け取り、
+    `subscriptions` テーブルへ反映します。
+- 制限適用
+  - upload 作成時にプランの `max_file_size` を検証
+  - shipment 確定時に保存期間と月間作成数を検証
+
+### Stripe webhook ローカル設定例
+
+```bash
+stripe listen --forward-to localhost:8080/v1/billing/webhook
 ```
 
 ## shipments仕様（今回PR時点）

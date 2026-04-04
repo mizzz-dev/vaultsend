@@ -53,9 +53,16 @@ func main() {
 		MaxFileSizeBytes:    cfg.UploadMaxFileSize,
 		MaxPresignedPartNum: cfg.UploadMaxParts,
 	}
+	stripeClient := &service.StripeClient{
+		SecretKey:     cfg.StripeSecretKey,
+		WebhookSecret: cfg.StripeWebhookSecret,
+		PriceIDPro:    cfg.StripePriceIDPro,
+	}
+	billingSvc := &service.BillingService{Store: queries, Stripe: stripeClient, FrontendURL: cfg.FrontendURL}
+	uploadSvc.Billing = billingSvc
 
 	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
-	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL}
+	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL, Billing: billingSvc}
 	guard := service.NewAccessGuard()
 	guard.VerifyMaxAttempts = cfg.VerifyMaxAttempts
 	guard.DownloadLimit = cfg.DownloadRateLimit
@@ -72,7 +79,7 @@ func main() {
 		Guard:          guard,
 	}
 
-	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc)
+	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc, billingSvc)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
