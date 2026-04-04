@@ -17,6 +17,7 @@ type Config struct {
 	S3Bucket     string
 	SQSQueueURL  string
 	SESFromEmail string
+	FrontendURL  string
 
 	// HTTPRequestTimeout はtimeout middlewareの既定値。
 	HTTPRequestTimeout time.Duration
@@ -35,6 +36,7 @@ func Load() (Config, error) {
 		S3Bucket:           os.Getenv("S3_BUCKET"),
 		SQSQueueURL:        os.Getenv("SQS_QUEUE_URL"),
 		SESFromEmail:       os.Getenv("SES_FROM_EMAIL"),
+		FrontendURL:        os.Getenv("FRONTEND_URL"),
 		HTTPRequestTimeout: 30 * time.Second,
 		UploadURLTTL:       15 * time.Minute,
 		UploadPartSize:     8 * 1024 * 1024,
@@ -72,6 +74,9 @@ func Load() (Config, error) {
 	}
 	if cfg.SESFromEmail == "" {
 		missing = append(missing, "SES_FROM_EMAIL")
+	}
+	if cfg.FrontendURL == "" {
+		missing = append(missing, "FRONTEND_URL")
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required envs: %v", missing)

@@ -11,8 +11,10 @@ import (
 
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/example/vaultsend/internal/config"
 	apphttp "github.com/example/vaultsend/internal/http"
+	"github.com/example/vaultsend/internal/queue"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/example/vaultsend/internal/storage"
 	"github.com/example/vaultsend/internal/store"
@@ -52,7 +54,8 @@ func main() {
 		MaxPresignedPartNum: cfg.UploadMaxParts,
 	}
 
-	shipmentSvc := &service.ShipmentService{Store: queries}
+	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
+	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL}
 	accessSvc := &service.AccessService{
 		Store:          queries,
 		ObjectStore:    s3Store,

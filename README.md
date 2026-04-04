@@ -6,13 +6,17 @@ Secure Send MVP のバックエンド土台（Go + chi + pgx + sqlc）です。
 
 ```text
 cmd/api
+cmd/worker
 internal/config
 internal/http
 internal/http/handler
 internal/domain
+internal/mail
+internal/queue
 internal/service
 internal/storage
 internal/store
+internal/worker
 db/migrations
 db/query
 ```
@@ -35,6 +39,7 @@ export AWS_REGION='ap-northeast-1'
 export S3_BUCKET='vaultsend-local'
 export SQS_QUEUE_URL='https://sqs.ap-northeast-1.amazonaws.com/123456789012/vaultsend-local'
 export SES_FROM_EMAIL='noreply@example.com'
+export FRONTEND_URL='http://localhost:3000'
 
 # uploads 本実装向け（任意上書き）
 export UPLOAD_URL_TTL_SEC=900
@@ -51,6 +56,23 @@ make migrate-up
 ```bash
 make run
 ```
+
+### 5) メール worker 起動（別ターミナル）
+
+```bash
+make run-worker
+```
+
+## メール送信フロー（SES + SQS）
+
+1. `POST /v1/shipments` で `share_mode=recipient_restricted` の shipment を確定。
+2. shipment確定トランザクション完了後、受信者ごとに SQS へ mail notification を enqueue。
+3. `cmd/worker` が SQS を long-poll し、メッセージを decode。
+4. worker が token 付きダウンロードURLをテンプレート展開。
+5. SES で HTML / Text のマルチパートメールを送信。
+6. 送信成功時のみ SQS メッセージを delete（失敗時は SQS retry に委譲）。
+
+> TODO: enqueue 失敗時補償は outbox 導入で改善予定。
 
 ## API 動作確認（ローカル）
 
@@ -97,6 +119,7 @@ curl -sS -X POST http://localhost:8080/v1/shipments \
     "shipment_id":"{uploadsで作成されたshipment_id}",
     "file_ids":["{file_id}"],
     "subject":"契約書",
+    "message":"確認をお願いします",
     "share_mode":"recipient_restricted",
     "recipients":[{"email":"a@example.com"},{"email":"b@example.com"}]
   }'
@@ -119,6 +142,14 @@ curl -sS -X POST http://localhost:8080/v1/access/{access_token}/verify \
 curl -sS "http://localhost:8080/v1/files/{file_id}/download-url?access_token={access_token}"
 ```
 
+## ローカル確認方法（仮置き）
+
+- LocalStack 等で SQS / SES のエミュレーション先を構成して疎通確認してください。
+- 最低確認:
+  - recipient_restricted shipment作成で API が 2xx を返す
+  - worker ログに `send email` エラーが出ない
+  - 対象 recipient の受信箱に通知メールが届く
+
 ## 開発用コマンド
 
 ```bash
@@ -137,6 +168,7 @@ make migrate-down
   - access token を DB 保持型で作成（生トークンは `url_shared` のみレスポンス返却）
   - パスワード指定時は bcrypt で `password_hash` を保存（平文保存禁止）
   - 送信確定時に shipment status を `sent` へ遷移
+  - recipient_restricted は送信確定後に SQS enqueue（token生値をイベントに積む）
 - `GET /v1/shipments/{id}`
   - shipment, files, recipients を返却
   - token の生値・hash は返却しない
@@ -144,10 +176,9 @@ make migrate-down
 ## 補足（仮置き / 未実装）
 
 - 仮置き: `POST /v1/uploads` は shipment 未指定時に匿名 draft shipment を自動作成します。
-- 仮置き: `POST /v1/shipments` の `access_url` は `https://app.example.com/r/{token}` 固定です。
 - 仮置き: `share_mode=public_link` は互換入力として受け付け、内部では `url_shared` に正規化します。
 - 仮置き: brute-force対策（rate limit / captcha）は TODO です。
 - 仮置き: ダウンロード回数制御は shipment 単位（`download_events` の success件数）です。
 - 仮置き: `download_events.ip_hash` にはIP平文ではなくSHA-256 hashを保存します。
-- 未実装: SES/SQS worker、認証本実装、virus scan。
+- 未実装: メール再送API、バウンス処理、SNS連携。
 - TODO: 現在の store は hand-rolled 実装です。次PRで sqlc generated code に置き換える予定です。
