@@ -1,9 +1,9 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
@@ -34,8 +34,16 @@ type CompleteUploadRequest struct {
 
 func (h UploadHandler) CreateUpload(w http.ResponseWriter, r *http.Request) {
 	var req CreateUploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
+		return
+	}
+	if len(strings.TrimSpace(req.FileName)) > 255 {
+		render.Error(w, http.StatusBadRequest, "invalid_file_name", "file_name が長すぎます", chimw.GetReqID(r.Context()))
+		return
+	}
+	if len(strings.TrimSpace(req.ContentType)) > 120 {
+		render.Error(w, http.StatusBadRequest, "invalid_content_type", "content_type が長すぎます", chimw.GetReqID(r.Context()))
 		return
 	}
 
@@ -62,7 +70,7 @@ func (h UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CompleteUploadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
 		return
 	}

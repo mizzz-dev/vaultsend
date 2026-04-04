@@ -13,11 +13,17 @@ import (
 
 func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService) stdhttp.Handler {
 	r := chi.NewRouter()
+	rateLimiter := appmw.NewInMemoryRateLimiter()
 
 	r.Use(appmw.RequestID)
 	r.Use(appmw.Recovery)
 	r.Use(appmw.RequestLogger)
+	r.Use(appmw.SecurityHeaders)
 	r.Use(appmw.Timeout(cfg.HTTPRequestTimeout))
+	r.Use(appmw.RateLimit(rateLimiter, appmw.RateLimitConfig{
+		PerMinuteLimit: cfg.RateLimitRPS,
+		VerifyLimit:    max(10, cfg.VerifyMaxAttempts*2),
+	}))
 
 	uploadHandler := handler.UploadHandler{Service: uploadSvc}
 	shipmentHandler := handler.ShipmentHandler{Service: shipmentSvc}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ type AccessService struct {
 	Store          AccessStore
 	ObjectStore    storage.ObjectStore
 	DownloadURLTTL time.Duration
+	Guard          *AccessGuard
 }
 
 type AccessInspectOutput struct {
@@ -94,6 +96,11 @@ func (s *AccessService) InspectAccess(ctx context.Context, rawToken string) (Acc
 }
 
 func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) error {
+	if s.guard().VerifyAllowed(in.Token) == false {
+		log.Printf("event=verify_locked token_hash=%s", hashToken(in.Token))
+		return &APIError{Status: 429, Code: "verify_locked", Message: "パスワード再試行が上限を超えました。時間をおいて再試行してください"}
+	}
+
 	state, err := s.resolveAccessState(ctx, in.Token)
 	if err != nil {
 		return err
@@ -102,15 +109,26 @@ func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) 
 		return nil
 	}
 	if in.Password == nil || strings.TrimSpace(*in.Password) == "" {
+		s.guard().RegisterVerifyFailure(in.Token)
+		log.Printf("event=verify_failure token_hash=%s reason=password_required", hashToken(in.Token))
 		return &APIError{Status: 400, Code: "password_required", Message: "password が必要です"}
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*state.shipment.PasswordHash), []byte(*in.Password)); err != nil {
+		s.guard().RegisterVerifyFailure(in.Token)
+		log.Printf("event=verify_failure token_hash=%s reason=invalid_password", hashToken(in.Token))
 		return &APIError{Status: 401, Code: "invalid_password", Message: "password が一致しません"}
 	}
+	s.guard().ResetVerify(in.Token)
 	return nil
 }
 
 func (s *AccessService) GenerateDownloadURL(ctx context.Context, in DownloadURLInput) (DownloadURLOutput, error) {
+	downloadKey := hashToken(in.Token) + ":" + hashIP(in.IPAddress)
+	if !s.guard().AllowDownload(downloadKey) {
+		log.Printf("event=download_abuse_block token_hash=%s ip_hash=%s", hashToken(in.Token), hashIP(in.IPAddress))
+		return DownloadURLOutput{}, &APIError{Status: 429, Code: "download_rate_limited", Message: "短時間でのダウンロードURL発行回数が多すぎます"}
+	}
+
 	state, err := s.resolveAccessState(ctx, in.Token)
 	if err != nil {
 		return DownloadURLOutput{}, err
@@ -247,4 +265,11 @@ func (s *AccessService) downloadURLTTL() time.Duration {
 		return defaultDownloadURLTTL
 	}
 	return s.DownloadURLTTL
+}
+
+func (s *AccessService) guard() *AccessGuard {
+	if s.Guard == nil {
+		s.Guard = NewAccessGuard()
+	}
+	return s.Guard
 }

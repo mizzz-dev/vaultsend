@@ -142,3 +142,50 @@ func TestGenerateDownloadURL_FileMismatch(t *testing.T) {
 		t.Fatalf("expected 404 got=%v", err)
 	}
 }
+
+func TestVerifyAccess_BruteForceLocked(t *testing.T) {
+	shipID := uuid.New()
+	b, _ := bcrypt.GenerateFromPassword([]byte("correct-password"), bcrypt.DefaultCost)
+	h := string(b)
+	fs := &fakeAccessStore{
+		token:    store.AccessToken{ID: uuid.New(), ShipmentID: shipID, TokenType: "download_access", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxUses: 10, Status: "active"},
+		shipment: store.Shipment{ID: shipID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxDownloads: 10, PasswordHash: &h},
+	}
+	guard := NewAccessGuard()
+	guard.VerifyMaxAttempts = 2
+	svc := &AccessService{Store: fs, Guard: guard}
+	wrong := "wrong-password"
+
+	for i := 0; i < 2; i++ {
+		_ = svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
+	}
+	err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
+		t.Fatalf("expected 429 got=%v", err)
+	}
+}
+
+func TestGenerateDownloadURL_AbuseBlocked(t *testing.T) {
+	shipID := uuid.New()
+	fileID := uuid.New()
+	fs := &fakeAccessStore{
+		token:       store.AccessToken{ID: uuid.New(), ShipmentID: shipID, TokenType: "download_access", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxUses: 10, Status: "active"},
+		shipment:    store.Shipment{ID: shipID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxDownloads: 10},
+		filesByShip: []store.File{{ID: fileID, ShipmentID: shipID}},
+		fileByID:    store.File{ID: fileID, ShipmentID: shipID, StorageBucket: "b", StorageKey: "k"},
+	}
+	guard := NewAccessGuard()
+	guard.DownloadLimit = 1
+	svc := &AccessService{Store: fs, ObjectStore: &fakeAccessObjectStore{}, Guard: guard}
+
+	_, err := svc.GenerateDownloadURL(context.Background(), DownloadURLInput{Token: "raw-token", FileID: fileID, IPAddress: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("unexpected first err: %v", err)
+	}
+	_, err = svc.GenerateDownloadURL(context.Background(), DownloadURLInput{Token: "raw-token", FileID: fileID, IPAddress: "127.0.0.1"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
+		t.Fatalf("expected 429 got=%v", err)
+	}
+}

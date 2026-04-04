@@ -56,10 +56,15 @@ func main() {
 
 	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
 	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL}
+	guard := service.NewAccessGuard()
+	guard.VerifyMaxAttempts = cfg.VerifyMaxAttempts
+	guard.DownloadLimit = cfg.DownloadRateLimit
+
 	accessSvc := &service.AccessService{
 		Store:          queries,
 		ObjectStore:    s3Store,
-		DownloadURLTTL: 60 * time.Second,
+		DownloadURLTTL: cfg.PresignedURLTTL,
+		Guard:          guard,
 	}
 
 	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc)
