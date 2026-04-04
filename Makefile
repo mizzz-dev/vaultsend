@@ -1,10 +1,13 @@
 APP_NAME := vaultsend-api
 DB_URL ?= postgres://vaultsend:vaultsend@localhost:5432/vaultsend?sslmode=disable
 
-.PHONY: run test lint migrate-up migrate-down sqlc-generate
+.PHONY: run run-worker test lint migrate-up migrate-down sqlc-generate
 
 run:
 	go run ./cmd/api
+
+run-worker:
+	go run ./cmd/worker
 
 test:
 	go test ./...

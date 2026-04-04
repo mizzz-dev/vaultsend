@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/vaultsend/internal/queue"
 	"github.com/example/vaultsend/internal/store"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -38,7 +39,9 @@ type ShipmentStore interface {
 }
 
 type ShipmentService struct {
-	Store ShipmentStore
+	Store       ShipmentStore
+	Queue       queue.Enqueuer
+	FrontendURL string
 }
 
 type ShipmentRecipientInput struct {
@@ -126,8 +129,34 @@ func (s *ShipmentService) CreateShipment(ctx context.Context, in CreateShipmentI
 		out.Recipients = append(out.Recipients, CreateShipmentRecipientView{ID: r.ID, Email: r.Email, Status: r.Status})
 	}
 	if normalized.rawURLSharedToken != "" {
-		accessURL := "https://app.example.com/r/" + normalized.rawURLSharedToken // 仮置き: ベースURLは固定
+		base := strings.TrimRight(s.FrontendURL, "/")
+		if base == "" {
+			base = "https://app.example.com" // TODO: FRONTEND_URL 必須化済みだが後方互換としてfallbackを残す。
+		}
+		accessURL := base + "/r/" + normalized.rawURLSharedToken
 		out.AccessURL = &accessURL
+	}
+
+	if normalized.responseShareMode == "recipient_restricted" && s.Queue != nil {
+		for _, recipient := range result.Recipients {
+			rawToken, ok := normalized.recipientRawTokenBy[recipient.EmailNormalized]
+			if !ok || rawToken == "" {
+				continue
+			}
+			event := queue.MailNotification{
+				ShipmentID:  result.Shipment.ID,
+				RecipientID: recipient.ID,
+				Email:       recipient.Email,
+				Token:       rawToken,
+				Subject:     result.Shipment.Title,
+				Message:     result.Shipment.Message,
+				ExpiresAt:   &result.Shipment.ExpiresAt,
+			}
+			if err := s.Queue.EnqueueMail(ctx, event); err != nil {
+				// TODO: outboxテーブル導入後は非同期再送で補償する。
+				return CreateShipmentOutput{}, fmt.Errorf("enqueue mail notification: %w", err)
+			}
+		}
 	}
 	return out, nil
 }
@@ -170,9 +199,10 @@ func (s *ShipmentService) GetShipmentDetail(ctx context.Context, shipmentID uuid
 }
 
 type normalizedCreateShipment struct {
-	finalizeParams    store.FinalizeShipmentParams
-	responseShareMode string
-	rawURLSharedToken string
+	finalizeParams      store.FinalizeShipmentParams
+	responseShareMode   string
+	rawURLSharedToken   string
+	recipientRawTokenBy map[string]string
 }
 
 func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShipmentInput) (normalizedCreateShipment, error) {
@@ -325,7 +355,12 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 		PlainRecipientTokenByKey: plainRecipientTokens,
 	}
 
-	return normalizedCreateShipment{finalizeParams: finalize, responseShareMode: shareModeResponse, rawURLSharedToken: rawURLSharedToken}, nil
+	return normalizedCreateShipment{
+		finalizeParams:      finalize,
+		responseShareMode:   shareModeResponse,
+		rawURLSharedToken:   rawURLSharedToken,
+		recipientRawTokenBy: plainRecipientTokens,
+	}, nil
 }
 
 func normalizeShareMode(v string) (string, string, error) {
