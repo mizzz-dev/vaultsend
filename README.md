@@ -134,7 +134,17 @@ curl -sS -X POST http://localhost:8080/v1/shipments \
     "recipients":[{"email":"a@example.com"},{"email":"b@example.com"}]
   }'
 
-curl -sS http://localhost:8080/v1/shipments/{shipment_id}
+# ログイン必須: 送信履歴一覧
+curl -sS "http://localhost:8080/v1/shipments?limit=20&offset=0" \
+  -b /tmp/vs-cookie.txt
+
+# ログイン必須: shipment 詳細
+curl -sS http://localhost:8080/v1/shipments/{shipment_id} \
+  -b /tmp/vs-cookie.txt
+
+# ログイン必須: shipment 論理削除
+curl -sS -X DELETE http://localhost:8080/v1/shipments/{shipment_id} \
+  -b /tmp/vs-cookie.txt
 ```
 
 
@@ -196,6 +206,8 @@ curl -sS "http://localhost:8080/v1/files/{file_id}/download-url?access_token={ac
 - ログイン利用（cookieあり）
   - `POST /v1/uploads` と `POST /v1/shipments` で `owner_user_id` をサーバー側で自動反映します。
   - shipment作成時に、対象ファイルの `owner_user_id` がログインユーザーと一致しない場合は409で拒否します。
+  - `GET /v1/shipments` / `GET /v1/shipments/{id}` / `DELETE /v1/shipments/{id}` はログイン必須です。
+  - shipment一覧/詳細/削除では `owner_user_id` を必ず検証し、他ユーザー資産には403を返します。
 
 ## レート制限 / セキュリティ仕様（MVP仮置き）
 
@@ -241,8 +253,39 @@ make migrate-down
   - 送信確定時に shipment status を `sent` へ遷移
   - recipient_restricted は送信確定後に SQS enqueue（token生値をイベントに積む）
 - `GET /v1/shipments/{id}`
+  - ログインユーザー本人の shipment のみ取得可能
   - shipment, files, recipients を返却
+  - download_count / recipient_downloads / last_download_at を返却
   - token の生値・hash は返却しない
+- `GET /v1/shipments`
+  - ログインユーザーの shipment 一覧を返却（`limit`, `offset` ページネーション）
+  - `download_count`, `max_download_count`, `file_count` を含む
+- `DELETE /v1/shipments/{id}`
+  - ログインユーザー本人の shipment のみ論理削除（`status=deleted`）
+  - 関連する access token を revoke し、以後ダウンロード不可
+
+### 送信履歴APIレスポンス例（抜粋）
+
+```json
+{
+  "items": [
+    {
+      "id": "8fb4d31a-5d14-4874-bfbf-5ca5f1d9bdbf",
+      "subject": "4月請求書",
+      "share_mode": "url_shared",
+      "status": "sent",
+      "created_at": "2026-04-04T03:00:00Z",
+      "expires_at": "2026-04-11T03:00:00Z",
+      "download_count": 2,
+      "max_download_count": 10,
+      "file_count": 3
+    }
+  ],
+  "limit": 20,
+  "offset": 0,
+  "total": 1
+}
+```
 
 ## 補足（仮置き / 未実装）
 

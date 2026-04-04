@@ -29,3 +29,36 @@ SET title = $2,
     sent_at = CASE WHEN $5 = 'sent' THEN now() ELSE sent_at END
 WHERE id = $1
 RETURNING *;
+
+-- name: ListShipmentsByUser :many
+SELECT
+    s.id,
+    s.title,
+    s.share_mode,
+    s.status,
+    s.created_at,
+    s.expires_at,
+    s.max_downloads,
+    COUNT(DISTINCT f.id)::int4 AS file_count,
+    COUNT(de.id) FILTER (WHERE de.result = 'success')::int4 AS download_count
+FROM shipments s
+LEFT JOIN files f ON f.shipment_id = s.id
+LEFT JOIN download_events de ON de.shipment_id = s.id
+WHERE s.owner_user_id = $1
+GROUP BY s.id
+ORDER BY s.created_at DESC, s.id DESC
+LIMIT $2 OFFSET $3;
+
+-- name: DeleteShipmentLogical :exec
+UPDATE shipments
+SET status = 'deleted',
+    deleted_at = COALESCE(deleted_at, now())
+WHERE id = $1
+  AND status NOT IN ('deleted', 'revoked');
+
+-- name: RevokeAccessTokensByShipment :exec
+UPDATE access_tokens
+SET status = 'revoked',
+    revoked_at = COALESCE(revoked_at, now())
+WHERE shipment_id = $1
+  AND status <> 'revoked';
