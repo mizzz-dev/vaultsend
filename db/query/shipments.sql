@@ -62,3 +62,30 @@ SET status = 'revoked',
     revoked_at = COALESCE(revoked_at, now())
 WHERE shipment_id = $1
   AND status <> 'revoked';
+
+-- name: ListExpiredShipments :many
+SELECT *
+FROM shipments
+WHERE expires_at < $1
+  AND status NOT IN ('deleted', 'expired', 'revoked')
+ORDER BY expires_at ASC
+LIMIT $2;
+
+-- name: MarkShipmentExpired :exec
+UPDATE shipments
+SET status = 'expired'
+WHERE id = $1
+  AND status NOT IN ('deleted', 'expired', 'revoked');
+
+-- name: ListDeletedShipmentsForCleanup :many
+SELECT *
+FROM shipments
+WHERE status = 'deleted'
+  AND deleted_at IS NOT NULL
+  AND deleted_at < $1
+ORDER BY deleted_at ASC
+LIMIT $2;
+
+-- name: DeleteShipmentCascade :exec
+DELETE FROM shipments
+WHERE id = $1;

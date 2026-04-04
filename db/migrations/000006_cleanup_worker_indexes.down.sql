@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_shipments_deleted_status_deleted_at;

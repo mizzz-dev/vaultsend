@@ -29,9 +29,12 @@ type Config struct {
 	UploadMaxFileSize  int64
 	UploadMaxParts     int
 
-	RateLimitRPS      int
-	VerifyMaxAttempts int
-	DownloadRateLimit int
+	RateLimitRPS        int
+	VerifyMaxAttempts   int
+	DownloadRateLimit   int
+	CleanupInterval     time.Duration
+	CleanupBatchSize    int32
+	DeletionGracePeriod time.Duration
 
 	// 認証セッション関連。
 	SessionTTLHours int
@@ -42,27 +45,30 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		AppEnv:             getEnv("APP_ENV", "local"),
-		Port:               getEnv("PORT", "8080"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		AWSRegion:          os.Getenv("AWS_REGION"),
-		S3Bucket:           os.Getenv("S3_BUCKET"),
-		SQSQueueURL:        os.Getenv("SQS_QUEUE_URL"),
-		SESFromEmail:       os.Getenv("SES_FROM_EMAIL"),
-		FrontendURL:        os.Getenv("FRONTEND_URL"),
-		HTTPRequestTimeout: 30 * time.Second,
-		UploadURLTTL:       15 * time.Minute,
-		PresignedURLTTL:    60 * time.Second,
-		UploadPartSize:     8 * 1024 * 1024,
-		UploadMaxFileSize:  10 * 1024 * 1024 * 1024,
-		UploadMaxParts:     1000,
-		RateLimitRPS:       100,
-		VerifyMaxAttempts:  5,
-		DownloadRateLimit:  10,
-		SessionTTLHours:    24 * 7,
-		CookieDomain:       strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")),
-		CookieSecure:       true,
-		CookieSameSite:     http.SameSiteLaxMode,
+		AppEnv:              getEnv("APP_ENV", "local"),
+		Port:                getEnv("PORT", "8080"),
+		DatabaseURL:         os.Getenv("DATABASE_URL"),
+		AWSRegion:           os.Getenv("AWS_REGION"),
+		S3Bucket:            os.Getenv("S3_BUCKET"),
+		SQSQueueURL:         os.Getenv("SQS_QUEUE_URL"),
+		SESFromEmail:        os.Getenv("SES_FROM_EMAIL"),
+		FrontendURL:         os.Getenv("FRONTEND_URL"),
+		HTTPRequestTimeout:  30 * time.Second,
+		UploadURLTTL:        15 * time.Minute,
+		PresignedURLTTL:     60 * time.Second,
+		UploadPartSize:      8 * 1024 * 1024,
+		UploadMaxFileSize:   10 * 1024 * 1024 * 1024,
+		UploadMaxParts:      1000,
+		RateLimitRPS:        100,
+		VerifyMaxAttempts:   5,
+		DownloadRateLimit:   10,
+		CleanupInterval:     3 * time.Minute,
+		CleanupBatchSize:    100,
+		DeletionGracePeriod: 24 * time.Hour,
+		SessionTTLHours:     24 * 7,
+		CookieDomain:        strings.TrimSpace(os.Getenv("COOKIE_DOMAIN")),
+		CookieSecure:        true,
+		CookieSameSite:      http.SameSiteLaxMode,
 	}
 
 	if cfg.AppEnv == "local" || cfg.AppEnv == "test" {
@@ -136,6 +142,27 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid DOWNLOAD_RATE_LIMIT: %q", v)
 		}
 		cfg.DownloadRateLimit = n
+	}
+	if v := os.Getenv("CLEANUP_INTERVAL_SEC"); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil || sec <= 0 {
+			return Config{}, fmt.Errorf("invalid CLEANUP_INTERVAL_SEC: %q", v)
+		}
+		cfg.CleanupInterval = time.Duration(sec) * time.Second
+	}
+	if v := os.Getenv("CLEANUP_BATCH_SIZE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return Config{}, fmt.Errorf("invalid CLEANUP_BATCH_SIZE: %q", v)
+		}
+		cfg.CleanupBatchSize = int32(n)
+	}
+	if v := os.Getenv("DELETION_GRACE_PERIOD_HOURS"); v != "" {
+		h, err := strconv.Atoi(v)
+		if err != nil || h <= 0 {
+			return Config{}, fmt.Errorf("invalid DELETION_GRACE_PERIOD_HOURS: %q", v)
+		}
+		cfg.DeletionGracePeriod = time.Duration(h) * time.Hour
 	}
 
 	missing := make([]string, 0)

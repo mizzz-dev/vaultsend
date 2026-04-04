@@ -24,4 +24,5 @@ type ObjectStore interface {
 	BatchPresignUploadParts(ctx context.Context, bucket, key, uploadID string, partCount int, expiresIn time.Duration) ([]PresignedPart, error)
 	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) error
 	GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error)
+	DeleteObject(ctx context.Context, bucket, key string) error
 }
