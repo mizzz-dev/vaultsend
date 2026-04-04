@@ -14,6 +14,7 @@ type fakeBillingStore struct {
 	sub           store.Subscription
 	subNotFound   bool
 	shipmentCount int64
+	storageBytes  int64
 	upserted      store.UpsertSubscriptionParams
 }
 
@@ -32,6 +33,9 @@ func (f *fakeBillingStore) UpsertSubscription(ctx context.Context, arg store.Ups
 }
 func (f *fakeBillingStore) CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error) {
 	return f.shipmentCount, nil
+}
+func (f *fakeBillingStore) SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	return f.storageBytes, nil
 }
 
 type fakeStripeGateway struct {
@@ -89,5 +93,33 @@ func TestBilling_CreateCheckout(t *testing.T) {
 	}
 	if out.SessionID == "" || out.URL == "" {
 		t.Fatalf("unexpected output: %+v", out)
+	}
+}
+
+func TestBilling_GetPlanDetails(t *testing.T) {
+	userID := uuid.New()
+	svc := &BillingService{Store: &fakeBillingStore{subNotFound: true, shipmentCount: 12, storageBytes: 2048}}
+	out, err := svc.GetPlanDetails(context.Background(), &userID)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.Plan != PlanFree || out.Usage.CurrentMonthShipments != 12 {
+		t.Fatalf("unexpected plan details: %+v", out)
+	}
+	if out.Remaining.RemainingShipments == nil || *out.Remaining.RemainingShipments != 38 {
+		t.Fatalf("unexpected remaining: %+v", out.Remaining)
+	}
+}
+
+func TestBilling_PlanLimitErrorFormat(t *testing.T) {
+	userID := uuid.New()
+	svc := &BillingService{Store: &fakeBillingStore{subNotFound: true}}
+	err := svc.EnforceUploadLimit(context.Background(), &userID, 2*1024*1024*1024)
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if apiErr.Error != PlanLimitErrorType || !apiErr.UpgradeRequired || apiErr.RecommendedPlan != RecommendedPlanPro {
+		t.Fatalf("unexpected api error: %+v", apiErr)
 	}
 }

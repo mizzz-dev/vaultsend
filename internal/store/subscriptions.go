@@ -97,3 +97,17 @@ func (q *Queries) CountShipmentsByUserSince(ctx context.Context, ownerUserID uui
 	}
 	return total, nil
 }
+
+func (q *Queries) SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	const query = `
+SELECT COALESCE(SUM(f.size_bytes), 0)
+FROM files f
+JOIN shipments s ON s.id = f.shipment_id
+WHERE s.owner_user_id = $1
+  AND s.status NOT IN ('deleted', 'revoked')`
+	var total int64
+	if err := q.db.QueryRow(ctx, query, ownerUserID).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 
@@ -62,7 +61,7 @@ func (h UploadHandler) CreateUpload(w http.ResponseWriter, r *http.Request) {
 		ChecksumSHA256: req.ChecksumSHA256,
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 
@@ -89,17 +88,8 @@ func (h UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.Service.CompleteUploadSession(r.Context(), service.CompleteUploadInput{UploadSessionID: uploadID, Parts: parts})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
-}
-
-func (h UploadHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	var apiErr *service.APIError
-	if errors.As(err, &apiErr) {
-		render.Error(w, apiErr.Status, apiErr.Code, apiErr.Message, chimw.GetReqID(r.Context()))
-		return
-	}
-	render.Error(w, http.StatusInternalServerError, "internal_error", "内部エラーが発生しました", chimw.GetReqID(r.Context()))
 }

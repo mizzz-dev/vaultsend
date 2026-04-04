@@ -28,6 +28,9 @@ func (h *handlerBillingStore) UpsertSubscription(ctx context.Context, arg store.
 func (h *handlerBillingStore) CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error) {
 	return 0, nil
 }
+func (h *handlerBillingStore) SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
+	return 0, nil
+}
 
 type handlerBillingStripe struct{}
 
@@ -67,6 +70,19 @@ func TestBillingCheckout_Authorized(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.CreateCheckout(w, req)
 	if w.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestBillingPlan_OK(t *testing.T) {
+	svc := &service.BillingService{Store: &handlerBillingStore{}, Stripe: &handlerBillingStripe{}, FrontendURL: "http://localhost:3000"}
+	h := BillingHandler{Service: svc}
+	req := httptest.NewRequest(http.MethodGet, "/v1/billing/plan", nil)
+	uid := uuid.New()
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uid, Email: "u@example.com"}))
+	w := httptest.NewRecorder()
+	h.GetPlan(w, req)
+	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }

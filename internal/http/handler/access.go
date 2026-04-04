@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -25,7 +24,7 @@ func (h AccessHandler) InspectAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.Service.InspectAccess(r.Context(), token)
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
@@ -45,7 +44,7 @@ func (h AccessHandler) VerifyAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Service.VerifyAccess(r.Context(), service.VerifyAccessInput{Token: token, Password: req.Password}); err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, map[string]any{"granted": true})
@@ -69,19 +68,10 @@ func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Reques
 		UserAgent: r.UserAgent(),
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
-}
-
-func (h AccessHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	var apiErr *service.APIError
-	if errors.As(err, &apiErr) {
-		render.Error(w, apiErr.Status, apiErr.Code, apiErr.Message, chimw.GetReqID(r.Context()))
-		return
-	}
-	render.Error(w, http.StatusInternalServerError, "internal_error", "内部エラーが発生しました", chimw.GetReqID(r.Context()))
 }
 
 func clientIP(r *http.Request) string {

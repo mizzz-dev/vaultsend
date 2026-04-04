@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,7 +90,7 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 		Password:         req.Password,
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusCreated, out)
@@ -112,7 +111,7 @@ func (h ShipmentHandler) GetShipment(w http.ResponseWriter, r *http.Request) {
 
 	out, err := h.Service.GetShipmentDetailByUser(r.Context(), user.ID, id)
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
@@ -139,7 +138,7 @@ func (h ShipmentHandler) ListShipmentNotifications(w http.ResponseWriter, r *htt
 		Offset:      offset,
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
@@ -157,7 +156,7 @@ func (h ShipmentHandler) ListShipmentRecipients(w http.ResponseWriter, r *http.R
 	}
 	out, err := h.Service.ListShipmentRecipientsByUser(r.Context(), user.ID, id)
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, map[string]any{"items": out})
@@ -180,7 +179,7 @@ func (h ShipmentHandler) ListShipments(w http.ResponseWriter, r *http.Request) {
 		Offset:      offset,
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
@@ -231,7 +230,7 @@ func (h ShipmentHandler) DeleteShipment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := h.Service.DeleteShipmentByUser(r.Context(), user.ID, id); err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -264,17 +263,8 @@ func (h ShipmentHandler) ResendShipment(w http.ResponseWriter, r *http.Request) 
 		RecipientIDs: req.RecipientIDs,
 	})
 	if err != nil {
-		h.writeServiceError(w, r, err)
+		writeServiceError(w, r, err)
 		return
 	}
 	render.JSON(w, http.StatusOK, out)
-}
-
-func (h ShipmentHandler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
-	var apiErr *service.APIError
-	if errors.As(err, &apiErr) {
-		render.Error(w, apiErr.Status, apiErr.Code, apiErr.Message, chimw.GetReqID(r.Context()))
-		return
-	}
-	render.Error(w, http.StatusInternalServerError, "internal_error", "内部エラーが発生しました", chimw.GetReqID(r.Context()))
 }
