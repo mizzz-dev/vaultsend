@@ -84,3 +84,14 @@ func (s *S3ObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, key
 	}
 	return nil
 }
+
+func (s *S3ObjectStore) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
+	out, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expiresIn))
+	if err != nil {
+		return "", fmt.Errorf("presign get object: %w", err)
+	}
+	return out.URL, nil
+}

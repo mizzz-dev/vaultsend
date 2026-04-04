@@ -245,6 +245,32 @@ type FileWithShipment struct {
 	OwnerUserID    *uuid.UUID
 }
 
+type AccessToken struct {
+	ID          uuid.UUID
+	ShipmentID  uuid.UUID
+	RecipientID *uuid.UUID
+	TokenType   string
+	TokenHash   string
+	ExpiresAt   time.Time
+	MaxUses     int32
+	UsedCount   int32
+	UsedAt      *time.Time
+	RevokedAt   *time.Time
+	Status      string
+	CreatedAt   time.Time
+}
+
+type DownloadEvent struct {
+	ID          int64
+	ShipmentID  uuid.UUID
+	FileID      uuid.UUID
+	RecipientID *uuid.UUID
+	Result      string
+	IPHash      string
+	UserAgent   *string
+	CreatedAt   time.Time
+}
+
 func (q *Queries) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
 	return q.createFile(ctx, q.db, arg)
 }
@@ -315,6 +341,22 @@ WHERE f.id = ANY($1::uuid[])`
 
 func (q *Queries) GetFilesByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]File, error) {
 	return q.getFilesByShipmentID(ctx, q.db, shipmentID)
+}
+
+func (q *Queries) GetFileByID(ctx context.Context, id uuid.UUID) (File, error) {
+	const query = `
+SELECT id, shipment_id, original_name, size_bytes, mime_type, storage_bucket, storage_key, checksum_sha256, upload_status, created_at
+FROM files
+WHERE id = $1`
+	row := q.db.QueryRow(ctx, query, id)
+	var f File
+	if err := scanFile(row, &f); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return File{}, ErrNotFound
+		}
+		return File{}, err
+	}
+	return f, nil
 }
 
 func (q *Queries) getFilesByShipmentID(ctx context.Context, db dbtx, shipmentID uuid.UUID) ([]File, error) {
@@ -413,6 +455,96 @@ VALUES ($1,$2,$3,$4,$5,$6,$7)`
 		if _, err := db.Exec(ctx, query, shipmentID, t.RecipientID, t.TokenType, t.TokenHash, t.ExpiresAt, t.MaxUses, t.Status); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (q *Queries) GetAccessTokenByHash(ctx context.Context, tokenHash string) (AccessToken, error) {
+	const query = `
+SELECT id, shipment_id, recipient_id, token_type, token_hash, expires_at, max_uses, used_count, used_at, revoked_at, status, created_at
+FROM access_tokens
+WHERE token_hash = $1`
+	row := q.db.QueryRow(ctx, query, tokenHash)
+	var t AccessToken
+	if err := scanAccessToken(row, &t); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AccessToken{}, ErrNotFound
+		}
+		return AccessToken{}, err
+	}
+	return t, nil
+}
+
+func (q *Queries) GetShipmentByID(ctx context.Context, id uuid.UUID) (Shipment, error) {
+	return q.GetShipment(ctx, id)
+}
+
+func (q *Queries) CountDownloadEventsByShipment(ctx context.Context, shipmentID uuid.UUID) (int32, error) {
+	const query = `SELECT COUNT(1) FROM download_events WHERE shipment_id = $1 AND result = 'success'`
+	var count int32
+	if err := q.db.QueryRow(ctx, query, shipmentID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+type CreateDownloadEventParams struct {
+	ShipmentID  uuid.UUID
+	FileID      uuid.UUID
+	RecipientID *uuid.UUID
+	Result      string
+	IPHash      string
+	UserAgent   *string
+}
+
+func (q *Queries) CreateDownloadEvent(ctx context.Context, arg CreateDownloadEventParams) (DownloadEvent, error) {
+	const query = `
+INSERT INTO download_events (shipment_id, file_id, recipient_id, result, ip_hash, user_agent)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, shipment_id, file_id, recipient_id, result, ip_hash, user_agent, created_at`
+	var ev DownloadEvent
+	err := q.db.QueryRow(ctx, query, arg.ShipmentID, arg.FileID, arg.RecipientID, arg.Result, arg.IPHash, arg.UserAgent).Scan(
+		&ev.ID,
+		&ev.ShipmentID,
+		&ev.FileID,
+		&ev.RecipientID,
+		&ev.Result,
+		&ev.IPHash,
+		&ev.UserAgent,
+		&ev.CreatedAt,
+	)
+	return ev, err
+}
+
+func (q *Queries) UpdateAccessTokenUsage(ctx context.Context, tokenID uuid.UUID) error {
+	const query = `
+UPDATE access_tokens
+SET used_count = used_count + 1,
+    used_at = COALESCE(used_at, now()),
+    status = CASE WHEN used_count + 1 >= max_uses THEN 'used' ELSE status END
+WHERE id = $1`
+	cmd, err := q.db.Exec(ctx, query, tokenID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (q *Queries) IncrementShipmentDownloadCount(ctx context.Context, shipmentID uuid.UUID) error {
+	const query = `
+UPDATE shipments
+SET current_downloads = current_downloads + 1,
+    status = CASE WHEN status = 'sent' THEN 'accessed' ELSE status END
+WHERE id = $1`
+	cmd, err := q.db.Exec(ctx, query, shipmentID)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -609,6 +741,23 @@ func scanFile(row rowScanner, f *File) error {
 		&f.ChecksumSha256,
 		&f.UploadStatus,
 		&f.CreatedAt,
+	)
+}
+
+func scanAccessToken(row rowScanner, t *AccessToken) error {
+	return row.Scan(
+		&t.ID,
+		&t.ShipmentID,
+		&t.RecipientID,
+		&t.TokenType,
+		&t.TokenHash,
+		&t.ExpiresAt,
+		&t.MaxUses,
+		&t.UsedCount,
+		&t.UsedAt,
+		&t.RevokedAt,
+		&t.Status,
+		&t.CreatedAt,
 	)
 }
 
