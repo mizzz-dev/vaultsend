@@ -3,15 +3,22 @@ package handler
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
+	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 )
 
 type BillingHandler struct {
 	Service *service.BillingService
+}
+
+type createCheckoutRequest struct {
+	OrganizationID *uuid.UUID `json:"organization_id"`
 }
 
 func (h BillingHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +27,16 @@ func (h BillingHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
 		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
 		return
 	}
-	out, err := h.Service.GetPlanDetails(r.Context(), &user.ID)
+	var orgID *uuid.UUID
+	if raw := strings.TrimSpace(r.URL.Query().Get("organization_id")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			render.Error(w, http.StatusBadRequest, "invalid_org_id", "organization id が不正です", chimw.GetReqID(r.Context()))
+			return
+		}
+		orgID = &parsed
+	}
+	out, err := h.Service.GetPlanDetails(r.Context(), &user.ID, orgID)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -34,7 +50,14 @@ func (h BillingHandler) CreateCheckout(w http.ResponseWriter, r *http.Request) {
 		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
 		return
 	}
-	out, err := h.Service.CreateCheckout(r.Context(), user.ID)
+	var req createCheckoutRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			render.Error(w, http.StatusBadRequest, "invalid_request", "不正なJSONです", chimw.GetReqID(r.Context()))
+			return
+		}
+	}
+	out, err := h.Service.CreateCheckoutForOrganization(r.Context(), user.ID, req.OrganizationID)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -53,4 +76,23 @@ func (h BillingHandler) Webhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h BillingHandler) GetOrgBilling(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	orgID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_org_id", "organization id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+	out, err := h.Service.GetOrganizationBilling(r.Context(), user.ID, orgID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
 }

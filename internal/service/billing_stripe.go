@@ -28,7 +28,12 @@ func (c *StripeClient) CreateCheckoutSession(ctx context.Context, in CheckoutInp
 	form.Set("mode", "subscription")
 	form.Set("success_url", in.SuccessURL)
 	form.Set("cancel_url", in.CancelURL)
-	form.Set("client_reference_id", in.UserID.String())
+	clientRefID := in.UserID.String()
+	if in.OrganizationID != nil {
+		clientRefID = in.OrganizationID.String()
+		form.Set("subscription_data[metadata][organization_id]", in.OrganizationID.String())
+	}
+	form.Set("client_reference_id", clientRefID)
 	form.Set("customer_email", in.UserEmail)
 	form.Set("line_items[0][price]", c.PriceIDPro)
 	form.Set("line_items[0][quantity]", "1")

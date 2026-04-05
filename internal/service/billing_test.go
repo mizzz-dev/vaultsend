@@ -10,16 +10,29 @@ import (
 )
 
 type fakeBillingStore struct {
-	user          store.User
-	sub           store.Subscription
-	subNotFound   bool
-	shipmentCount int64
-	storageBytes  int64
-	upserted      store.UpsertSubscriptionParams
+	user             store.User
+	sub              store.Subscription
+	orgSub           store.Subscription
+	subNotFound      bool
+	orgSubNotFound   bool
+	shipmentCount    int64
+	storageBytes     int64
+	orgShipmentCount int64
+	orgStorageBytes  int64
+	memberCount      int64
+	memberRole       string
+	upserted         store.UpsertSubscriptionParams
+	upsertedOrg      store.UpsertSubscriptionParams
 }
 
 func (f *fakeBillingStore) GetUserByID(ctx context.Context, id uuid.UUID) (store.User, error) {
 	return f.user, nil
+}
+func (f *fakeBillingStore) GetOrganizationMember(ctx context.Context, orgID uuid.UUID, userID uuid.UUID) (store.OrganizationMember, error) {
+	if f.memberRole == "" {
+		return store.OrganizationMember{}, store.ErrNotFound
+	}
+	return store.OrganizationMember{OrganizationID: orgID, UserID: userID, Role: f.memberRole}, nil
 }
 func (f *fakeBillingStore) GetLatestSubscriptionByUserID(ctx context.Context, userID uuid.UUID) (store.Subscription, error) {
 	if f.subNotFound {
@@ -27,15 +40,34 @@ func (f *fakeBillingStore) GetLatestSubscriptionByUserID(ctx context.Context, us
 	}
 	return f.sub, nil
 }
+func (f *fakeBillingStore) GetLatestSubscriptionByOrgID(ctx context.Context, orgID uuid.UUID) (store.Subscription, error) {
+	if f.orgSubNotFound {
+		return store.Subscription{}, store.ErrNotFound
+	}
+	return f.orgSub, nil
+}
 func (f *fakeBillingStore) UpsertSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error) {
 	f.upserted = arg
 	return store.Subscription{UserID: arg.UserID, Plan: arg.Plan, Status: arg.Status}, nil
 }
+func (f *fakeBillingStore) UpsertOrgSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error) {
+	f.upsertedOrg = arg
+	return store.Subscription{OrganizationID: arg.OrganizationID, Plan: arg.Plan, Status: arg.Status}, nil
+}
 func (f *fakeBillingStore) CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error) {
 	return f.shipmentCount, nil
 }
+func (f *fakeBillingStore) CountShipmentsByOrgSince(ctx context.Context, organizationID uuid.UUID, since time.Time) (int64, error) {
+	return f.orgShipmentCount, nil
+}
 func (f *fakeBillingStore) SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
 	return f.storageBytes, nil
+}
+func (f *fakeBillingStore) SumStorageBytesByOrg(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	return f.orgStorageBytes, nil
+}
+func (f *fakeBillingStore) CountOrganizationMembers(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	return f.memberCount, nil
 }
 
 type fakeStripeGateway struct {
@@ -53,16 +85,32 @@ func (f *fakeStripeGateway) ParseSubscriptionWebhook(payload []byte, signature s
 func TestBilling_EnforceUploadLimit_FreeVsPro(t *testing.T) {
 	userID := uuid.New()
 	svc := &BillingService{Store: &fakeBillingStore{subNotFound: true}}
-	if err := svc.EnforceUploadLimit(context.Background(), &userID, 2*1024*1024*1024); err == nil {
+	if err := svc.EnforceUploadLimit(context.Background(), &userID, nil, 2*1024*1024*1024); err == nil {
 		t.Fatal("free should reject >1GB")
 	}
 	pro := &BillingService{Store: &fakeBillingStore{sub: store.Subscription{Plan: PlanPro, Status: "active"}}}
-	if err := pro.EnforceUploadLimit(context.Background(), &userID, 2*1024*1024*1024); err != nil {
+	if err := pro.EnforceUploadLimit(context.Background(), &userID, nil, 2*1024*1024*1024); err != nil {
 		t.Fatalf("pro should allow: %v", err)
 	}
 }
 
-func TestBilling_HandleWebhook_Upsert(t *testing.T) {
+func TestBilling_GetPlan_OrgPreferred(t *testing.T) {
+	userID := uuid.New()
+	orgID := uuid.New()
+	svc := &BillingService{Store: &fakeBillingStore{
+		sub:    store.Subscription{Plan: PlanFree, Status: "active"},
+		orgSub: store.Subscription{Plan: PlanPro, Status: "active"},
+	}}
+	plan, err := svc.GetPlan(context.Background(), &userID, &orgID)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if plan.Name != PlanPro {
+		t.Fatalf("expected org plan to win: %+v", plan)
+	}
+}
+
+func TestBilling_HandleWebhook_UserUpsert(t *testing.T) {
 	userID := uuid.New()
 	st := &fakeBillingStore{}
 	svc := &BillingService{Store: st, Stripe: &fakeStripeGateway{event: WebhookSubscriptionEvent{
@@ -75,8 +123,26 @@ func TestBilling_HandleWebhook_Upsert(t *testing.T) {
 	if err := svc.HandleWebhook(context.Background(), []byte("{}"), "sig"); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if st.upserted.UserID != userID || st.upserted.Plan != PlanPro {
-		t.Fatalf("unexpected upsert: %+v", st.upserted)
+	if st.upserted.UserID == nil || *st.upserted.UserID != userID || st.upserted.Plan != PlanPro {
+		t.Fatalf("unexpected user upsert: %+v", st.upserted)
+	}
+}
+
+func TestBilling_HandleWebhook_OrgUpsert(t *testing.T) {
+	orgID := uuid.New()
+	st := &fakeBillingStore{}
+	svc := &BillingService{Store: st, Stripe: &fakeStripeGateway{event: WebhookSubscriptionEvent{
+		Type:                 "customer.subscription.updated",
+		StripeSubscriptionID: "sub_org_123",
+		StripeCustomerID:     "cus_org_123",
+		Status:               "active",
+		Metadata:             map[string]string{"organization_id": orgID.String(), "plan": "pro"},
+	}}}
+	if err := svc.HandleWebhook(context.Background(), []byte("{}"), "sig"); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if st.upsertedOrg.OrganizationID == nil || *st.upsertedOrg.OrganizationID != orgID {
+		t.Fatalf("unexpected org upsert: %+v", st.upsertedOrg)
 	}
 }
 
@@ -96,10 +162,35 @@ func TestBilling_CreateCheckout(t *testing.T) {
 	}
 }
 
+func TestBilling_GetOrganizationBilling_OwnerOnly(t *testing.T) {
+	orgID := uuid.New()
+	ownerID := uuid.New()
+	memberID := uuid.New()
+	svcOwner := &BillingService{Store: &fakeBillingStore{
+		memberRole:       "owner",
+		orgSub:           store.Subscription{Plan: PlanPro, Status: "active"},
+		orgShipmentCount: 3,
+		orgStorageBytes:  1024,
+		memberCount:      5,
+	}}
+	out, err := svcOwner.GetOrganizationBilling(context.Background(), ownerID, orgID)
+	if err != nil {
+		t.Fatalf("owner should pass: %v", err)
+	}
+	if out.Plan != PlanPro || out.MembersCount != 5 {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+
+	svcMember := &BillingService{Store: &fakeBillingStore{memberRole: "member"}}
+	if _, err := svcMember.GetOrganizationBilling(context.Background(), memberID, orgID); err == nil {
+		t.Fatal("member should be forbidden")
+	}
+}
+
 func TestBilling_GetPlanDetails(t *testing.T) {
 	userID := uuid.New()
 	svc := &BillingService{Store: &fakeBillingStore{subNotFound: true, shipmentCount: 12, storageBytes: 2048}}
-	out, err := svc.GetPlanDetails(context.Background(), &userID)
+	out, err := svc.GetPlanDetails(context.Background(), &userID, nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -114,7 +205,7 @@ func TestBilling_GetPlanDetails(t *testing.T) {
 func TestBilling_PlanLimitErrorFormat(t *testing.T) {
 	userID := uuid.New()
 	svc := &BillingService{Store: &fakeBillingStore{subNotFound: true}}
-	err := svc.EnforceUploadLimit(context.Background(), &userID, 2*1024*1024*1024)
+	err := svc.EnforceUploadLimit(context.Background(), &userID, nil, 2*1024*1024*1024)
 	apiErr, ok := err.(*APIError)
 	if !ok {
 		t.Fatalf("unexpected err: %v", err)

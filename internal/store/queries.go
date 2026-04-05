@@ -16,14 +16,15 @@ var ErrConflict = errors.New("store: conflict")
 // TODO: 次PRで sqlc generated code に置き換え、手書きSQLを段階的に削除する。
 
 type CreateShipmentParams struct {
-	OwnerType    string
-	OwnerUserID  *uuid.UUID
-	Status       string
-	ShareMode    string
-	Title        string
-	Message      *string
-	MaxDownloads int32
-	ExpiresAt    time.Time
+	OwnerType      string
+	OwnerUserID    *uuid.UUID
+	OrganizationID *uuid.UUID
+	Status         string
+	ShareMode      string
+	Title          string
+	Message        *string
+	MaxDownloads   int32
+	ExpiresAt      time.Time
 }
 
 type Shipment struct {

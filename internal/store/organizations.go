@@ -137,6 +137,15 @@ func (q *Queries) GetOrganizationMember(ctx context.Context, orgID uuid.UUID, us
 	return m, err
 }
 
+func (q *Queries) CountOrganizationMembers(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	const query = `SELECT COUNT(1) FROM organization_members WHERE organization_id=$1`
+	var total int64
+	if err := q.db.QueryRow(ctx, query, orgID).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 func (q *Queries) ListShipmentsAccessibleByUser(ctx context.Context, userID uuid.UUID, limit int32, offset int32) ([]ShipmentListItem, error) {
 	const query = `
 SELECT

@@ -17,7 +17,7 @@ type BillingPlanContext struct {
 }
 
 type BillingPlanner interface {
-	GetPlanDetails(ctx context.Context, userID *uuid.UUID) (service.PlanDetails, error)
+	GetPlanDetails(ctx context.Context, userID, orgID *uuid.UUID) (service.PlanDetails, error)
 }
 
 func OptionalPlan(planner BillingPlanner) func(http.Handler) http.Handler {
@@ -30,7 +30,7 @@ func OptionalPlan(planner BillingPlanner) func(http.Handler) http.Handler {
 				if user, ok := AuthUserFromContext(ctx); ok {
 					uid = &user.ID
 				}
-				if details, err := planner.GetPlanDetails(ctx, uid); err == nil {
+				if details, err := planner.GetPlanDetails(ctx, uid, nil); err == nil {
 					resolved = BillingPlanContext{
 						Plan:      service.UserPlan{Name: details.Plan, Status: details.Status, Limits: details.Limits},
 						Usage:     details.Usage,

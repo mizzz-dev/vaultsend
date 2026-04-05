@@ -11,6 +11,7 @@ import (
 	"github.com/example/vaultsend/internal/http/middleware"
 	"github.com/example/vaultsend/internal/service"
 	"github.com/example/vaultsend/internal/store"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
@@ -19,17 +20,35 @@ type handlerBillingStore struct{}
 func (h *handlerBillingStore) GetUserByID(ctx context.Context, id uuid.UUID) (store.User, error) {
 	return store.User{ID: id, Email: "u@example.com"}, nil
 }
+func (h *handlerBillingStore) GetOrganizationMember(ctx context.Context, orgID uuid.UUID, userID uuid.UUID) (store.OrganizationMember, error) {
+	return store.OrganizationMember{OrganizationID: orgID, UserID: userID, Role: "owner"}, nil
+}
 func (h *handlerBillingStore) GetLatestSubscriptionByUserID(ctx context.Context, userID uuid.UUID) (store.Subscription, error) {
+	return store.Subscription{}, store.ErrNotFound
+}
+func (h *handlerBillingStore) GetLatestSubscriptionByOrgID(ctx context.Context, orgID uuid.UUID) (store.Subscription, error) {
 	return store.Subscription{}, store.ErrNotFound
 }
 func (h *handlerBillingStore) UpsertSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error) {
 	return store.Subscription{}, nil
 }
+func (h *handlerBillingStore) UpsertOrgSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error) {
+	return store.Subscription{}, nil
+}
 func (h *handlerBillingStore) CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error) {
+	return 0, nil
+}
+func (h *handlerBillingStore) CountShipmentsByOrgSince(ctx context.Context, organizationID uuid.UUID, since time.Time) (int64, error) {
 	return 0, nil
 }
 func (h *handlerBillingStore) SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
 	return 0, nil
+}
+func (h *handlerBillingStore) SumStorageBytesByOrg(ctx context.Context, organizationID uuid.UUID) (int64, error) {
+	return 0, nil
+}
+func (h *handlerBillingStore) CountOrganizationMembers(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	return 1, nil
 }
 
 type handlerBillingStripe struct{}
@@ -82,6 +101,22 @@ func TestBillingPlan_OK(t *testing.T) {
 	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uid, Email: "u@example.com"}))
 	w := httptest.NewRecorder()
 	h.GetPlan(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestBillingGetOrgBilling_OK(t *testing.T) {
+	svc := &service.BillingService{Store: &handlerBillingStore{}, Stripe: &handlerBillingStripe{}, FrontendURL: "http://localhost:3000"}
+	h := BillingHandler{Service: svc}
+	orgID := uuid.New()
+	req := httptest.NewRequest(http.MethodGet, "/v1/orgs/"+orgID.String()+"/billing", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", orgID.String())
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "u@example.com"}))
+	w := httptest.NewRecorder()
+	h.GetOrgBilling(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}

@@ -12,7 +12,7 @@ import (
 
 type fakePlanner struct{}
 
-func (f *fakePlanner) GetPlanDetails(ctx context.Context, userID *uuid.UUID) (service.PlanDetails, error) {
+func (f *fakePlanner) GetPlanDetails(ctx context.Context, userID, orgID *uuid.UUID) (service.PlanDetails, error) {
 	remaining := int64(10)
 	return service.PlanDetails{
 		Plan:      service.PlanFree,
