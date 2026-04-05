@@ -479,3 +479,30 @@ curl -sS -X POST http://localhost:8080/v1/shipments/{shipment_id}/resend \
 - TODO: 将来PRで download成功時に recipients.status 更新を導入し、状態整合性を自動化する。
 - 未実装: バウンス処理、SNS連携。
 - TODO: 現在の store は hand-rolled 実装です。次PRで sqlc generated code に置き換える予定です。
+
+## Organization (Team) MVP
+
+Secure Send は個人所有に加えて organization 所有をサポートしました。
+
+- `shipments.organization_id` が `NULL` の場合は個人所有。
+- `shipments.organization_id` がセットされる場合はチーム所有。
+- 権限: `owner` / `admin` / `member`
+  - owner: 全操作
+  - admin: 作成・削除・再送
+  - member: 作成・閲覧
+
+### Organization API
+
+- `POST /v1/orgs`
+- `GET /v1/orgs`
+- `GET /v1/orgs/{id}`
+- `POST /v1/orgs/{id}/members`
+- `DELETE /v1/orgs/{id}/members/{user_id}`
+
+### Shipment API 拡張
+
+`POST /v1/shipments` で `organization_id` を指定できます。指定時は所属チェックと role による権限制御が有効です。
+
+### Billing 注意点
+
+現時点ではユーザーの plan 制御を優先し、organization 単位課金は TODO として設計を残しています。

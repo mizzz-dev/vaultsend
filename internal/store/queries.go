@@ -30,6 +30,7 @@ type Shipment struct {
 	ID               uuid.UUID `json:"id"`
 	OwnerType        string    `json:"owner_type"`
 	OwnerUserID      *uuid.UUID
+	OrganizationID   *uuid.UUID
 	Status           string `json:"status"`
 	ShareMode        string `json:"share_mode"`
 	Title            string `json:"title"`
@@ -52,13 +53,14 @@ func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) 
 func (q *Queries) createShipment(ctx context.Context, db dbtx, arg CreateShipmentParams) (Shipment, error) {
 	const query = `
 INSERT INTO shipments (
-    owner_type, owner_user_id, status, share_mode, title, message, max_downloads, expires_at
+    owner_type, owner_user_id, organization_id, status, share_mode, title, message, max_downloads, expires_at
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+RETURNING id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
           current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at`
 	row := db.QueryRow(ctx, query,
 		arg.OwnerType,
 		arg.OwnerUserID,
+		arg.OrganizationID,
 		arg.Status,
 		arg.ShareMode,
 		arg.Title,
@@ -73,7 +75,7 @@ RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, pas
 
 func (q *Queries) GetShipment(ctx context.Context, id uuid.UUID) (Shipment, error) {
 	const query = `
-SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+SELECT id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
        current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
 FROM shipments
 WHERE id = $1`
@@ -91,6 +93,7 @@ type FinalizeShipmentParams struct {
 	ExpectedStatuses         []string
 	Title                    string
 	Message                  *string
+	OrganizationID           *uuid.UUID
 	ShareMode                string
 	Status                   string
 	ExpiresAt                time.Time
@@ -116,7 +119,7 @@ func (q *Queries) FinalizeShipment(ctx context.Context, arg FinalizeShipmentPara
 	}
 	defer tx.Rollback(ctx)
 
-	const lockQuery = `SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+	const lockQuery = `SELECT id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
        current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
 FROM shipments WHERE id = $1 FOR UPDATE`
 	var current Shipment
@@ -141,9 +144,9 @@ FROM shipments WHERE id = $1 FOR UPDATE`
 
 	const updateShipment = `
 UPDATE shipments
-SET title=$2, message=$3, share_mode=$4, status=$5, expires_at=$6, max_downloads=$7, password_hash=$8, owner_user_id=COALESCE($9, owner_user_id), sent_at=CASE WHEN $5 = 'sent' THEN now() ELSE sent_at END
+SET title=$2, message=$3, share_mode=$4, status=$5, expires_at=$6, max_downloads=$7, password_hash=$8, owner_user_id=COALESCE($9, owner_user_id), organization_id=COALESCE($10, organization_id), sent_at=CASE WHEN $5 = 'sent' THEN now() ELSE sent_at END
 WHERE id=$1
-RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+RETURNING id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
           current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at`
 	var shipment Shipment
 	if err := scanShipment(tx.QueryRow(ctx, updateShipment,
@@ -156,6 +159,7 @@ RETURNING id, owner_type, owner_user_id, status, share_mode, title, message, pas
 		arg.MaxDownloads,
 		arg.PasswordHash,
 		arg.OwnerUserID,
+		arg.OrganizationID,
 	), &shipment); err != nil {
 		return ShipmentFinalizeResult{}, err
 	}
@@ -847,7 +851,7 @@ WHERE id = $1
 
 func (q *Queries) ListExpiredShipments(ctx context.Context, now time.Time, limit int32) ([]Shipment, error) {
 	const query = `
-SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+SELECT id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
        current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
 FROM shipments
 WHERE expires_at < $1
@@ -890,7 +894,7 @@ WHERE id = $1
 
 func (q *Queries) ListDeletedShipmentsForCleanup(ctx context.Context, deletedBefore time.Time, limit int32) ([]Shipment, error) {
 	const query = `
-SELECT id, owner_type, owner_user_id, status, share_mode, title, message, password_hash, max_downloads,
+SELECT id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
        current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at
 FROM shipments
 WHERE status = 'deleted'
@@ -1174,6 +1178,7 @@ func scanShipment(row rowScanner, s *Shipment) error {
 		&s.ID,
 		&s.OwnerType,
 		&s.OwnerUserID,
+		&s.OrganizationID,
 		&s.Status,
 		&s.ShareMode,
 		&s.Title,

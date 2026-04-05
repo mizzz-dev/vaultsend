@@ -11,7 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService, authSvc *service.AuthService, billingSvc *service.BillingService) stdhttp.Handler {
+func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.UploadService, shipmentSvc *service.ShipmentService, accessSvc *service.AccessService, authSvc *service.AuthService, billingSvc *service.BillingService, orgSvc *service.OrgService) stdhttp.Handler {
 	r := chi.NewRouter()
 	rateLimiter := appmw.NewInMemoryRateLimiter()
 
@@ -32,6 +32,7 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 	accessHandler := handler.AccessHandler{Service: accessSvc}
 	authHandler := handler.AuthHandler{Service: authSvc, CookieDomain: cfg.CookieDomain, CookieSecure: cfg.CookieSecure, CookieSameSite: cfg.CookieSameSite}
 	billingHandler := handler.BillingHandler{Service: billingSvc}
+	orgHandler := handler.OrgHandler{Service: orgSvc}
 
 	r.Get("/healthz", handler.Health)
 	r.Route("/v1", func(r chi.Router) {
@@ -59,6 +60,15 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 				r.Post("/logout", authHandler.Logout)
 				r.Get("/me", authHandler.Me)
 			})
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(appmw.RequireAuth(authSvc))
+			r.Post("/orgs", orgHandler.CreateOrg)
+			r.Get("/orgs", orgHandler.ListOrgs)
+			r.Get("/orgs/{id}", orgHandler.GetOrg)
+			r.Post("/orgs/{id}/members", orgHandler.AddMember)
+			r.Delete("/orgs/{id}/members/{user_id}", orgHandler.DeleteMember)
 		})
 		r.Group(func(r chi.Router) {
 			r.Use(appmw.RequireAuth(authSvc))

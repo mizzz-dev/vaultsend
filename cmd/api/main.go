@@ -60,9 +60,10 @@ func main() {
 	}
 	billingSvc := &service.BillingService{Store: queries, Stripe: stripeClient, FrontendURL: cfg.FrontendURL}
 	uploadSvc.Billing = billingSvc
+	orgSvc := &service.OrgService{Store: queries}
 
 	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
-	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL, Billing: billingSvc}
+	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL, Billing: billingSvc, Org: orgSvc}
 	guard := service.NewAccessGuard()
 	guard.VerifyMaxAttempts = cfg.VerifyMaxAttempts
 	guard.DownloadLimit = cfg.DownloadRateLimit
@@ -79,7 +80,7 @@ func main() {
 		Guard:          guard,
 	}
 
-	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc, billingSvc)
+	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc, billingSvc, orgSvc)
 	server := &http.Server{Addr: ":" + cfg.Port, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
