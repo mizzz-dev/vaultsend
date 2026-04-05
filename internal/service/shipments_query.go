@@ -134,11 +134,11 @@ func (s *ShipmentService) ListShipmentsByUser(ctx context.Context, in ShipmentLi
 		return ListShipmentsOutput{}, &APIError{Status: 400, Code: "invalid_offset", Message: "offset が不正です"}
 	}
 
-	rows, err := s.Store.ListShipmentsByUser(ctx, in.OwnerUserID, in.Limit, in.Offset)
+	rows, err := s.Store.ListShipmentsAccessibleByUser(ctx, in.OwnerUserID, in.Limit, in.Offset)
 	if err != nil {
 		return ListShipmentsOutput{}, fmt.Errorf("list shipments by user: %w", err)
 	}
-	total, err := s.Store.CountShipmentsByUser(ctx, in.OwnerUserID)
+	total, err := s.Store.CountShipmentsAccessibleByUser(ctx, in.OwnerUserID)
 	if err != nil {
 		return ListShipmentsOutput{}, fmt.Errorf("count shipments by user: %w", err)
 	}
@@ -167,7 +167,11 @@ func (s *ShipmentService) GetShipmentDetailByUser(ctx context.Context, ownerUser
 		}
 		return ShipmentDetailOutput{}, fmt.Errorf("get shipment: %w", err)
 	}
-	if shipment.OwnerUserID == nil || *shipment.OwnerUserID != ownerUserID {
+	if s.Org != nil {
+		if err := s.Org.AuthorizeShipmentAction(ctx, ownerUserID, shipment, "read"); err != nil {
+			return ShipmentDetailOutput{}, err
+		}
+	} else if shipment.OwnerUserID == nil || *shipment.OwnerUserID != ownerUserID {
 		return ShipmentDetailOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "他ユーザーの shipment にはアクセスできません"}
 	}
 
@@ -295,7 +299,11 @@ func (s *ShipmentService) ListShipmentNotificationsByUser(ctx context.Context, i
 		}
 		return ListShipmentNotificationsOutput{}, fmt.Errorf("get shipment: %w", err)
 	}
-	if shipment.OwnerUserID == nil || *shipment.OwnerUserID != in.OwnerUserID {
+	if s.Org != nil {
+		if err := s.Org.AuthorizeShipmentAction(ctx, in.OwnerUserID, shipment, "read"); err != nil {
+			return ListShipmentNotificationsOutput{}, err
+		}
+	} else if shipment.OwnerUserID == nil || *shipment.OwnerUserID != in.OwnerUserID {
 		return ListShipmentNotificationsOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "他ユーザーの shipment にはアクセスできません"}
 	}
 	rows, err := s.Store.ListNotificationEventsByShipmentID(ctx, in.ShipmentID, in.Limit, in.Offset)
@@ -345,7 +353,11 @@ func (s *ShipmentService) DeleteShipmentByUser(ctx context.Context, ownerUserID 
 		}
 		return fmt.Errorf("get shipment: %w", err)
 	}
-	if shipment.OwnerUserID == nil || *shipment.OwnerUserID != ownerUserID {
+	if s.Org != nil {
+		if err := s.Org.AuthorizeShipmentAction(ctx, ownerUserID, shipment, "delete"); err != nil {
+			return err
+		}
+	} else if shipment.OwnerUserID == nil || *shipment.OwnerUserID != ownerUserID {
 		return &APIError{Status: 403, Code: "forbidden", Message: "他ユーザーの shipment は削除できません"}
 	}
 	if shipment.Status == "deleted" || shipment.Status == "revoked" {

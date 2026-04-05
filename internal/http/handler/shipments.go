@@ -22,11 +22,12 @@ type CreateShipmentRequest struct {
 	ShipmentID *uuid.UUID  `json:"shipment_id"`
 	FileIDs    []uuid.UUID `json:"file_ids"`
 	// 仮置き: 後方互換のためリクエスト項目は受け取るが、認証済み時はサーバー側のユーザーIDを優先する。
-	OwnerUserID *uuid.UUID `json:"owner_user_id"`
-	Subject     string     `json:"subject"`
-	Message     *string    `json:"message"`
-	ShareMode   string     `json:"share_mode"`
-	Recipients  []struct {
+	OwnerUserID    *uuid.UUID `json:"owner_user_id"`
+	OrganizationID *uuid.UUID `json:"organization_id"`
+	Subject        string     `json:"subject"`
+	Message        *string    `json:"message"`
+	ShareMode      string     `json:"share_mode"`
+	Recipients     []struct {
 		Email string `json:"email"`
 	} `json:"recipients"`
 	ExpiresAt        *string `json:"expires_at"`
@@ -81,6 +82,7 @@ func (h ShipmentHandler) CreateShipment(w http.ResponseWriter, r *http.Request) 
 		ShipmentID:       req.ShipmentID,
 		FileIDs:          req.FileIDs,
 		OwnerUserID:      ownerUserID,
+		OrganizationID:   req.OrganizationID,
 		Subject:          req.Subject,
 		Message:          req.Message,
 		ShareMode:        req.ShareMode,

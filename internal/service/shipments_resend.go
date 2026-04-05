@@ -48,7 +48,11 @@ func (s *ShipmentService) ResendShipmentNotification(ctx context.Context, in Res
 		}
 		return ResendShipmentOutput{}, fmt.Errorf("get shipment: %w", err)
 	}
-	if shipment.OwnerUserID == nil || *shipment.OwnerUserID != in.OwnerUserID {
+	if s.Org != nil {
+		if err := s.Org.AuthorizeShipmentAction(ctx, in.OwnerUserID, shipment, "resend"); err != nil {
+			return ResendShipmentOutput{}, err
+		}
+	} else if shipment.OwnerUserID == nil || *shipment.OwnerUserID != in.OwnerUserID {
 		return ResendShipmentOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "他ユーザーの shipment は再送できません"}
 	}
 	if shipment.ShareMode != "recipient_restricted" {

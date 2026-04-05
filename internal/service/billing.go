@@ -234,6 +234,7 @@ func (s *BillingService) EnforceUploadLimit(ctx context.Context, userID *uuid.UU
 	return nil
 }
 
+// TODO(org-plan): organization課金導入後は organization_id 優先でプランを解決する。
 func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID *uuid.UUID, expiresAt time.Time) error {
 	plan, err := s.GetUserPlan(ctx, userID)
 	if err != nil {

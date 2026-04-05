@@ -41,6 +41,8 @@ type ShipmentStore interface {
 	CreateNotificationEvent(ctx context.Context, arg store.CreateNotificationEventParams) (store.NotificationEvent, error)
 	ListShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error)
 	CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
+	ListShipmentsAccessibleByUser(ctx context.Context, userID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error)
+	CountShipmentsAccessibleByUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	GetNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) ([]store.NotificationEvent, error)
 	ListNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID, limit int32, offset int32) ([]store.NotificationEventListItem, error)
 	CountNotificationEventsByShipmentID(ctx context.Context, shipmentID uuid.UUID) (int64, error)
@@ -56,6 +58,7 @@ type ShipmentService struct {
 	Queue       queue.Enqueuer
 	FrontendURL string
 	Billing     *BillingService
+	Org         *OrgService
 }
 
 type ShipmentRecipientInput struct {
@@ -66,6 +69,7 @@ type CreateShipmentInput struct {
 	ShipmentID       *uuid.UUID
 	FileIDs          []uuid.UUID
 	OwnerUserID      *uuid.UUID
+	OrganizationID   *uuid.UUID
 	Subject          string
 	Message          *string
 	ShareMode        string
@@ -221,6 +225,11 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 	if in.ExpiresAt != nil {
 		expiresAt = in.ExpiresAt.UTC()
 	}
+	if in.OrganizationID != nil && s.Org != nil && in.OwnerUserID != nil {
+		if _, err := s.Org.ResolveUserOrgRole(ctx, *in.OwnerUserID, *in.OrganizationID); err != nil {
+			return normalizedCreateShipment{}, &APIError{Status: 403, Code: "forbidden", Message: "organization に所属していません"}
+		}
+	}
 	if s.Billing != nil {
 		if err := s.Billing.EnforceShipmentLimit(ctx, in.OwnerUserID, expiresAt); err != nil {
 			return normalizedCreateShipment{}, err
@@ -334,6 +343,7 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 		MaxDownloads:             maxDownload,
 		PasswordHash:             passwordHash,
 		OwnerUserID:              in.OwnerUserID,
+		OrganizationID:           in.OrganizationID,
 		FileIDs:                  dedupFileIDs,
 		Recipients:               recipients,
 		AccessTokens:             tokens,

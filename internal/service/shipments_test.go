@@ -101,6 +101,12 @@ func (f *fakeShipmentStore) ListShipmentsByUser(ctx context.Context, ownerUserID
 func (f *fakeShipmentStore) CountShipmentsByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error) {
 	return f.totalOut, nil
 }
+func (f *fakeShipmentStore) ListShipmentsAccessibleByUser(ctx context.Context, userID uuid.UUID, limit int32, offset int32) ([]store.ShipmentListItem, error) {
+	return f.listOut, nil
+}
+func (f *fakeShipmentStore) CountShipmentsAccessibleByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	return f.totalOut, nil
+}
 func (f *fakeShipmentStore) GetRecipientDownloadStatsByShipment(ctx context.Context, shipmentID uuid.UUID) ([]store.RecipientDownloadStat, error) {
 	return f.recipientStat, nil
 }
