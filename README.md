@@ -262,12 +262,14 @@ make migrate-down
   - `pro`: 最大ファイルサイズ 10GB / 保存期間 7日 / shipment 制限なし（MVP）
 - Checkout
   - `POST /v1/billing/checkout`（ログイン必須）で Stripe Checkout Session URL を発行します。
+  - body に `organization_id` を渡すと organization 単位で Checkout を作成します（owner のみ）。
 - Webhook
   - `POST /v1/billing/webhook` で `customer.subscription.created|updated|deleted` を受け取り、
-    `subscriptions` テーブルへ反映します。
+    `subscriptions` テーブルへ反映します（`metadata.organization_id` がある場合は org subscription を更新）。
 
 - プラン情報API
   - `GET /v1/billing/plan`（ログイン必須）
+  - `organization_id` query が指定された場合は organization plan を優先して返します。
   - レスポンス:
     - `plan`: `free|pro`
     - `limits.max_file_size` / `limits.max_storage_days` / `limits.monthly_shipment_limit`
@@ -281,8 +283,19 @@ make migrate-down
   - `upgrade_url`: `/settings/billing`
   - `recommended_plan`: `pro`
 - 制限適用
+  - `organization_id` がある upload / shipment は org plan を優先して適用
+  - 個人利用は user plan を適用
   - upload 作成時にプランの `max_file_size` を検証
   - shipment 確定時に保存期間と月間作成数を検証
+
+### Organization Billing API
+
+- `GET /v1/orgs/{id}/billing`（ログイン必須、owner のみ）
+  - `plan`
+  - `usage.current_month_shipments`
+  - `usage.current_storage_bytes`
+  - `members_count`
+  - `next_billing_at`
 
 ### Stripe webhook ローカル設定例
 
@@ -505,4 +518,5 @@ Secure Send は個人所有に加えて organization 所有をサポートしま
 
 ### Billing 注意点
 
-現時点ではユーザーの plan 制御を優先し、organization 単位課金は TODO として設計を残しています。
+organization 課金をサポートしました。`organization_id` が指定された操作は org subscription を優先し、
+未指定時は user subscription を利用します。

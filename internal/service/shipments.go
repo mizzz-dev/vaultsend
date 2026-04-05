@@ -231,7 +231,7 @@ func (s *ShipmentService) validateAndNormalize(ctx context.Context, in CreateShi
 		}
 	}
 	if s.Billing != nil {
-		if err := s.Billing.EnforceShipmentLimit(ctx, in.OwnerUserID, expiresAt); err != nil {
+		if err := s.Billing.EnforceShipmentLimit(ctx, in.OwnerUserID, in.OrganizationID, expiresAt); err != nil {
 			return normalizedCreateShipment{}, err
 		}
 	}

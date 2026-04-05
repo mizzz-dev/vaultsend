@@ -74,6 +74,7 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 			r.Use(appmw.RequireAuth(authSvc))
 			r.Get("/billing/plan", billingHandler.GetPlan)
 			r.Post("/billing/checkout", billingHandler.CreateCheckout)
+			r.Get("/orgs/{id}/billing", billingHandler.GetOrgBilling)
 		})
 		r.Post("/billing/webhook", billingHandler.Webhook)
 	})

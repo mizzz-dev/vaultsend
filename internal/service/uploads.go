@@ -56,6 +56,7 @@ type UploadService struct {
 type CreateUploadInput struct {
 	ShipmentID     *uuid.UUID
 	OwnerUserID    *uuid.UUID
+	OrganizationID *uuid.UUID
 	FileName       string
 	ContentType    string
 	FileSize       int64
@@ -89,7 +90,7 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 		return CreateUploadOutput{}, err
 	}
 	if s.Billing != nil {
-		if err := s.Billing.EnforceUploadLimit(ctx, in.OwnerUserID, in.FileSize); err != nil {
+		if err := s.Billing.EnforceUploadLimit(ctx, in.OwnerUserID, in.OrganizationID, in.FileSize); err != nil {
 			return CreateUploadOutput{}, err
 		}
 	}
@@ -104,14 +105,15 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 	if shipmentID == nil {
 		// 仮置き: shipment 作成API前の段階でも uploads 単体で進められるよう draft shipment を作成する。
 		shipment, err := s.Store.CreateShipment(ctx, store.CreateShipmentParams{
-			OwnerType:    "anonymous",
-			OwnerUserID:  in.OwnerUserID,
-			Status:       "uploading",
-			ShareMode:    "recipient_restricted",
-			Title:        "(仮置き) upload-in-progress",
-			Message:      nil,
-			MaxDownloads: 10,
-			ExpiresAt:    time.Now().UTC().Add(7 * 24 * time.Hour),
+			OwnerType:      "anonymous",
+			OwnerUserID:    in.OwnerUserID,
+			OrganizationID: in.OrganizationID,
+			Status:         "uploading",
+			ShareMode:      "recipient_restricted",
+			Title:          "(仮置き) upload-in-progress",
+			Message:        nil,
+			MaxDownloads:   10,
+			ExpiresAt:      time.Now().UTC().Add(7 * 24 * time.Hour),
 		})
 		if err != nil {
 			return CreateUploadOutput{}, fmt.Errorf("create shipment: %w", err)

@@ -53,10 +53,16 @@ type PlanDetails struct {
 
 type BillingStore interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (store.User, error)
+	GetOrganizationMember(ctx context.Context, orgID uuid.UUID, userID uuid.UUID) (store.OrganizationMember, error)
 	GetLatestSubscriptionByUserID(ctx context.Context, userID uuid.UUID) (store.Subscription, error)
+	GetLatestSubscriptionByOrgID(ctx context.Context, orgID uuid.UUID) (store.Subscription, error)
 	UpsertSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error)
+	UpsertOrgSubscription(ctx context.Context, arg store.UpsertSubscriptionParams) (store.Subscription, error)
 	CountShipmentsByUserSince(ctx context.Context, ownerUserID uuid.UUID, since time.Time) (int64, error)
+	CountShipmentsByOrgSince(ctx context.Context, organizationID uuid.UUID, since time.Time) (int64, error)
 	SumStorageBytesByUser(ctx context.Context, ownerUserID uuid.UUID) (int64, error)
+	SumStorageBytesByOrg(ctx context.Context, organizationID uuid.UUID) (int64, error)
+	CountOrganizationMembers(ctx context.Context, orgID uuid.UUID) (int64, error)
 }
 
 type CheckoutSession struct {
@@ -65,10 +71,11 @@ type CheckoutSession struct {
 }
 
 type CheckoutInput struct {
-	UserID     uuid.UUID
-	UserEmail  string
-	SuccessURL string
-	CancelURL  string
+	UserID         uuid.UUID
+	UserEmail      string
+	OrganizationID *uuid.UUID
+	SuccessURL     string
+	CancelURL      string
 }
 
 type CheckoutOutput struct {
@@ -123,6 +130,44 @@ func (s *BillingService) CreateCheckout(ctx context.Context, userID uuid.UUID) (
 	return CheckoutOutput{SessionID: checkout.ID, URL: checkout.URL}, nil
 }
 
+func (s *BillingService) CreateCheckoutForOrganization(ctx context.Context, actorID uuid.UUID, organizationID *uuid.UUID) (CheckoutOutput, error) {
+	if organizationID == nil {
+		return s.CreateCheckout(ctx, actorID)
+	}
+	member, err := s.Store.GetOrganizationMember(ctx, *organizationID, actorID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return CheckoutOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "organization へのアクセス権がありません"}
+		}
+		return CheckoutOutput{}, fmt.Errorf("get organization member: %w", err)
+	}
+	if member.Role != "owner" {
+		return CheckoutOutput{}, &APIError{Status: 403, Code: "forbidden", Message: "organization billing は owner のみ操作できます"}
+	}
+	user, err := s.Store.GetUserByID(ctx, actorID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return CheckoutOutput{}, &APIError{Status: 404, Code: "user_not_found", Message: "user が見つかりません"}
+		}
+		return CheckoutOutput{}, fmt.Errorf("get user: %w", err)
+	}
+	base := strings.TrimRight(s.FrontendURL, "/")
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	checkout, err := s.Stripe.CreateCheckoutSession(ctx, CheckoutInput{
+		UserID:         actorID,
+		UserEmail:      user.Email,
+		OrganizationID: organizationID,
+		SuccessURL:     base + "/settings/billing?checkout=success",
+		CancelURL:      base + "/settings/billing?checkout=cancel",
+	})
+	if err != nil {
+		return CheckoutOutput{}, fmt.Errorf("create stripe checkout: %w", err)
+	}
+	return CheckoutOutput{SessionID: checkout.ID, URL: checkout.URL}, nil
+}
+
 func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, signature string) error {
 	if s.Stripe == nil {
 		return &APIError{Status: 503, Code: "billing_unavailable", Message: "billing が利用できません"}
@@ -134,14 +179,8 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 	if evt.StripeSubscriptionID == "" {
 		return nil
 	}
+	orgIDRaw := strings.TrimSpace(evt.Metadata["organization_id"])
 	userIDRaw := strings.TrimSpace(evt.Metadata["user_id"])
-	if userIDRaw == "" {
-		return nil
-	}
-	userID, err := uuid.Parse(userIDRaw)
-	if err != nil {
-		return nil
-	}
 	plan := PlanFree
 	if strings.EqualFold(strings.TrimSpace(evt.Metadata["plan"]), PlanPro) {
 		plan = PlanPro
@@ -153,21 +192,57 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 	if evt.Type == "customer.subscription.deleted" {
 		status = "canceled"
 	}
-	_, err = s.Store.UpsertSubscription(ctx, store.UpsertSubscriptionParams{
-		UserID:               userID,
-		StripeCustomerID:     ptrOrNil(evt.StripeCustomerID),
-		StripeSubscriptionID: evt.StripeSubscriptionID,
-		Plan:                 plan,
-		Status:               status,
-		CurrentPeriodEnd:     evt.CurrentPeriodEnd,
-	})
-	if err != nil {
-		return fmt.Errorf("upsert subscription: %w", err)
+	var upsertErr error
+	if orgIDRaw != "" {
+		orgID, parseErr := uuid.Parse(orgIDRaw)
+		if parseErr != nil {
+			return nil
+		}
+		_, upsertErr = s.Store.UpsertOrgSubscription(ctx, store.UpsertSubscriptionParams{
+			OrganizationID:       &orgID,
+			StripeCustomerID:     ptrOrNil(evt.StripeCustomerID),
+			StripeSubscriptionID: evt.StripeSubscriptionID,
+			Plan:                 plan,
+			Status:               status,
+			CurrentPeriodEnd:     evt.CurrentPeriodEnd,
+		})
+	} else {
+		if userIDRaw == "" {
+			return nil
+		}
+		userID, parseErr := uuid.Parse(userIDRaw)
+		if parseErr != nil {
+			return nil
+		}
+		_, upsertErr = s.Store.UpsertSubscription(ctx, store.UpsertSubscriptionParams{
+			UserID:               &userID,
+			StripeCustomerID:     ptrOrNil(evt.StripeCustomerID),
+			StripeSubscriptionID: evt.StripeSubscriptionID,
+			Plan:                 plan,
+			Status:               status,
+			CurrentPeriodEnd:     evt.CurrentPeriodEnd,
+		})
+	}
+	if upsertErr != nil {
+		return fmt.Errorf("upsert subscription: %w", upsertErr)
 	}
 	return nil
 }
 
-func (s *BillingService) GetUserPlan(ctx context.Context, userID *uuid.UUID) (UserPlan, error) {
+func (s *BillingService) GetPlan(ctx context.Context, userID, orgID *uuid.UUID) (UserPlan, error) {
+	if orgID != nil {
+		sub, err := s.Store.GetLatestSubscriptionByOrgID(ctx, *orgID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return UserPlan{Name: PlanFree, Status: "inactive", Limits: limitsForPlan(PlanFree)}, nil
+			}
+			return UserPlan{}, fmt.Errorf("get latest organization subscription: %w", err)
+		}
+		if sub.Plan == PlanPro && isPaidActive(sub.Status) {
+			return UserPlan{Name: PlanPro, Status: sub.Status, Limits: limitsForPlan(PlanPro)}, nil
+		}
+		return UserPlan{Name: PlanFree, Status: sub.Status, Limits: limitsForPlan(PlanFree)}, nil
+	}
 	if userID == nil {
 		return UserPlan{Name: PlanFree, Status: "inactive", Limits: limitsForPlan(PlanFree)}, nil
 	}
@@ -184,7 +259,19 @@ func (s *BillingService) GetUserPlan(ctx context.Context, userID *uuid.UUID) (Us
 	return UserPlan{Name: PlanFree, Status: sub.Status, Limits: limitsForPlan(PlanFree)}, nil
 }
 
-func (s *BillingService) GetUsage(ctx context.Context, userID *uuid.UUID) (PlanUsage, error) {
+func (s *BillingService) GetUsage(ctx context.Context, userID, orgID *uuid.UUID) (PlanUsage, error) {
+	if orgID != nil {
+		since := time.Now().UTC().AddDate(0, 0, -30)
+		count, err := s.Store.CountShipmentsByOrgSince(ctx, *orgID, since)
+		if err != nil {
+			return PlanUsage{}, fmt.Errorf("count organization shipments: %w", err)
+		}
+		storageBytes, err := s.Store.SumStorageBytesByOrg(ctx, *orgID)
+		if err != nil {
+			return PlanUsage{}, fmt.Errorf("sum organization storage bytes: %w", err)
+		}
+		return PlanUsage{CurrentMonthShipments: count, CurrentStorageBytes: storageBytes}, nil
+	}
 	if userID == nil {
 		return PlanUsage{}, nil
 	}
@@ -211,20 +298,20 @@ func (s *BillingService) GetRemainingQuota(plan UserPlan, usage PlanUsage) Remai
 	return RemainingQuota{RemainingShipments: &remaining}
 }
 
-func (s *BillingService) GetPlanDetails(ctx context.Context, userID *uuid.UUID) (PlanDetails, error) {
-	plan, err := s.GetUserPlan(ctx, userID)
+func (s *BillingService) GetPlanDetails(ctx context.Context, userID, orgID *uuid.UUID) (PlanDetails, error) {
+	plan, err := s.GetPlan(ctx, userID, orgID)
 	if err != nil {
 		return PlanDetails{}, err
 	}
-	usage, err := s.GetUsage(ctx, userID)
+	usage, err := s.GetUsage(ctx, userID, orgID)
 	if err != nil {
 		return PlanDetails{}, err
 	}
 	return PlanDetails{Plan: plan.Name, Status: plan.Status, Limits: plan.Limits, Usage: usage, Remaining: s.GetRemainingQuota(plan, usage)}, nil
 }
 
-func (s *BillingService) EnforceUploadLimit(ctx context.Context, userID *uuid.UUID, fileSize int64) error {
-	plan, err := s.GetUserPlan(ctx, userID)
+func (s *BillingService) EnforceUploadLimit(ctx context.Context, userID, orgID *uuid.UUID, fileSize int64) error {
+	plan, err := s.GetPlan(ctx, userID, orgID)
 	if err != nil {
 		return err
 	}
@@ -234,9 +321,8 @@ func (s *BillingService) EnforceUploadLimit(ctx context.Context, userID *uuid.UU
 	return nil
 }
 
-// TODO(org-plan): organization課金導入後は organization_id 優先でプランを解決する。
-func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID *uuid.UUID, expiresAt time.Time) error {
-	plan, err := s.GetUserPlan(ctx, userID)
+func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID, orgID *uuid.UUID, expiresAt time.Time) error {
+	plan, err := s.GetPlan(ctx, userID, orgID)
 	if err != nil {
 		return err
 	}
@@ -244,8 +330,8 @@ func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID *uuid.
 	if expiresAt.After(maxExpiry) {
 		return newPlanLimitError("STORAGE_DAYS_LIMIT", "現在のプランで設定可能な保存期間を超えています")
 	}
-	if userID != nil && plan.Limits.MonthlyShipmentLimit > 0 {
-		usage, err := s.GetUsage(ctx, userID)
+	if plan.Limits.MonthlyShipmentLimit > 0 {
+		usage, err := s.GetUsage(ctx, userID, orgID)
 		if err != nil {
 			return err
 		}
@@ -254,6 +340,48 @@ func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID *uuid.
 		}
 	}
 	return nil
+}
+
+type OrganizationBillingDetails struct {
+	Plan           string         `json:"plan"`
+	Status         string         `json:"status"`
+	Usage          PlanUsage      `json:"usage"`
+	MembersCount   int64          `json:"members_count"`
+	NextBillingAt  *time.Time     `json:"next_billing_at,omitempty"`
+	RemainingQuota RemainingQuota `json:"remaining"`
+}
+
+func (s *BillingService) GetOrganizationBilling(ctx context.Context, actorID, orgID uuid.UUID) (OrganizationBillingDetails, error) {
+	member, err := s.Store.GetOrganizationMember(ctx, orgID, actorID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return OrganizationBillingDetails{}, &APIError{Status: 403, Code: "forbidden", Message: "organization へのアクセス権がありません"}
+		}
+		return OrganizationBillingDetails{}, fmt.Errorf("get organization member: %w", err)
+	}
+	if member.Role != "owner" {
+		return OrganizationBillingDetails{}, &APIError{Status: 403, Code: "forbidden", Message: "organization billing は owner のみ操作できます"}
+	}
+	planDetails, err := s.GetPlanDetails(ctx, nil, &orgID)
+	if err != nil {
+		return OrganizationBillingDetails{}, err
+	}
+	count, err := s.Store.CountOrganizationMembers(ctx, orgID)
+	if err != nil {
+		return OrganizationBillingDetails{}, fmt.Errorf("count organization members: %w", err)
+	}
+	var nextBillingAt *time.Time
+	if sub, subErr := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID); subErr == nil {
+		nextBillingAt = sub.CurrentPeriodEnd
+	}
+	return OrganizationBillingDetails{
+		Plan:           planDetails.Plan,
+		Status:         planDetails.Status,
+		Usage:          planDetails.Usage,
+		MembersCount:   count,
+		NextBillingAt:  nextBillingAt,
+		RemainingQuota: planDetails.Remaining,
+	}, nil
 }
 
 func (s *BillingService) MarshalPlan(plan UserPlan) json.RawMessage {

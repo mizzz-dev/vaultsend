@@ -19,6 +19,7 @@ type UploadHandler struct {
 
 type CreateUploadRequest struct {
 	ShipmentID     *uuid.UUID `json:"shipment_id"`
+	OrganizationID *uuid.UUID `json:"organization_id"`
 	FileName       string     `json:"file_name"`
 	FileSize       int64      `json:"file_size"`
 	ContentType    string     `json:"content_type"`
@@ -55,6 +56,7 @@ func (h UploadHandler) CreateUpload(w http.ResponseWriter, r *http.Request) {
 	out, err := h.Service.CreateUploadSession(r.Context(), service.CreateUploadInput{
 		ShipmentID:     req.ShipmentID,
 		OwnerUserID:    ownerUserID,
+		OrganizationID: req.OrganizationID,
 		FileName:       req.FileName,
 		ContentType:    req.ContentType,
 		FileSize:       req.FileSize,
