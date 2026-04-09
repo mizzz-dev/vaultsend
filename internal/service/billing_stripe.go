@@ -150,6 +150,62 @@ func (c *StripeClient) UpdateSubscriptionQuantity(ctx context.Context, subscript
 	return nil
 }
 
+func (c *StripeClient) ListInvoices(ctx context.Context, customerID string, limit int64, startingAfter string) (StripeInvoiceList, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	form := url.Values{}
+	form.Set("customer", customerID)
+	form.Set("limit", strconv.FormatInt(limit, 10))
+	if strings.TrimSpace(startingAfter) != "" {
+		form.Set("starting_after", strings.TrimSpace(startingAfter))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.stripe.com/v1/invoices?"+form.Encode(), nil)
+	if err != nil {
+		return StripeInvoiceList{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.SecretKey)
+	resBody, statusCode, err := c.do(req)
+	if err != nil {
+		return StripeInvoiceList{}, err
+	}
+	if statusCode >= 400 {
+		return StripeInvoiceList{}, fmt.Errorf("stripe list invoices failed status=%d body=%s", statusCode, string(resBody))
+	}
+	var out struct {
+		Data    []stripeInvoice `json:"data"`
+		HasMore bool            `json:"has_more"`
+	}
+	if err := json.Unmarshal(resBody, &out); err != nil {
+		return StripeInvoiceList{}, err
+	}
+	list := StripeInvoiceList{Data: make([]StripeInvoice, 0, len(out.Data)), HasMore: out.HasMore}
+	for _, inv := range out.Data {
+		list.Data = append(list.Data, inv.toModel())
+	}
+	return list, nil
+}
+
+func (c *StripeClient) GetInvoice(ctx context.Context, invoiceID string) (StripeInvoice, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.stripe.com/v1/invoices/"+url.PathEscape(invoiceID), nil)
+	if err != nil {
+		return StripeInvoice{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.SecretKey)
+	resBody, statusCode, err := c.do(req)
+	if err != nil {
+		return StripeInvoice{}, err
+	}
+	if statusCode >= 400 {
+		return StripeInvoice{}, fmt.Errorf("stripe get invoice failed status=%d body=%s", statusCode, string(resBody))
+	}
+	var out stripeInvoice
+	if err := json.Unmarshal(resBody, &out); err != nil {
+		return StripeInvoice{}, err
+	}
+	return out.toModel(), nil
+}
+
 func (c *StripeClient) getSubscriptionItemID(ctx context.Context, subscriptionID string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.stripe.com/v1/subscriptions/"+url.PathEscape(subscriptionID), nil)
 	if err != nil {
@@ -213,4 +269,102 @@ func verifyStripeSignature(payload []byte, signature, secret string) bool {
 	mac.Write([]byte(signedPayload))
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
+func (c *StripeClient) do(req *http.Request) ([]byte, int, error) {
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	return body, res.StatusCode, nil
+}
+
+type stripeInvoice struct {
+	ID                string `json:"id"`
+	Customer          string `json:"customer"`
+	AmountDue         int64  `json:"amount_due"`
+	Currency          string `json:"currency"`
+	Status            string `json:"status"`
+	HostedInvoiceURL  string `json:"hosted_invoice_url"`
+	InvoicePDF        string `json:"invoice_pdf"`
+	Created           int64  `json:"created"`
+	StatusTransitions struct {
+		PaidAt int64 `json:"paid_at"`
+	} `json:"status_transitions"`
+	TotalTaxAmounts []struct {
+		Amount int64 `json:"amount"`
+	} `json:"total_tax_amounts"`
+	PaymentIntent struct {
+		PaymentMethod string `json:"payment_method"`
+		Status        string `json:"status"`
+	} `json:"payment_intent"`
+	DefaultPaymentMethod struct {
+		ID string `json:"id"`
+	} `json:"default_payment_method"`
+	Lines struct {
+		Data []struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+			Amount      int64  `json:"amount"`
+			Currency    string `json:"currency"`
+			Quantity    int64  `json:"quantity"`
+			Period      struct {
+				Start int64 `json:"start"`
+				End   int64 `json:"end"`
+			} `json:"period"`
+		} `json:"data"`
+	} `json:"lines"`
+}
+
+func (s stripeInvoice) toModel() StripeInvoice {
+	out := StripeInvoice{
+		ID:               s.ID,
+		CustomerID:       s.Customer,
+		AmountDue:        s.AmountDue,
+		Currency:         s.Currency,
+		Status:           s.Status,
+		HostedInvoiceURL: s.HostedInvoiceURL,
+		InvoicePDF:       s.InvoicePDF,
+		PaymentStatus:    s.PaymentIntent.Status,
+		PaymentMethod:    s.PaymentIntent.PaymentMethod,
+		LineItems:        make([]InvoiceLineItem, 0, len(s.Lines.Data)),
+	}
+	if out.PaymentMethod == "" {
+		out.PaymentMethod = s.DefaultPaymentMethod.ID
+	}
+	if s.Created > 0 {
+		out.CreatedAt = time.Unix(s.Created, 0).UTC()
+	}
+	if s.StatusTransitions.PaidAt > 0 {
+		paidAt := time.Unix(s.StatusTransitions.PaidAt, 0).UTC()
+		out.PaidAt = &paidAt
+	}
+	for _, tax := range s.TotalTaxAmounts {
+		out.TaxAmount += tax.Amount
+	}
+	for _, line := range s.Lines.Data {
+		item := InvoiceLineItem{
+			ID:          line.ID,
+			Description: line.Description,
+			Amount:      line.Amount,
+			Currency:    line.Currency,
+			Quantity:    line.Quantity,
+		}
+		if line.Period.Start > 0 {
+			start := time.Unix(line.Period.Start, 0).UTC()
+			item.PeriodStart = &start
+		}
+		if line.Period.End > 0 {
+			end := time.Unix(line.Period.End, 0).UTC()
+			item.PeriodEnd = &end
+		}
+		out.LineItems = append(out.LineItems, item)
+	}
+	return out
 }

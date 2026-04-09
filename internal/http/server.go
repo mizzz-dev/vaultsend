@@ -75,6 +75,8 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 			r.Get("/billing/plan", billingHandler.GetPlan)
 			r.Post("/billing/checkout", billingHandler.CreateCheckout)
 			r.Get("/orgs/{id}/billing", billingHandler.GetOrgBilling)
+			r.Get("/orgs/{id}/invoices", billingHandler.ListOrgInvoices)
+			r.Get("/orgs/{id}/invoices/{invoice_id}", billingHandler.GetOrgInvoice)
 		})
 		r.Post("/billing/webhook", billingHandler.Webhook)
 	})

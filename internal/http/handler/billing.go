@@ -3,6 +3,7 @@ package handler
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/example/vaultsend/internal/http/middleware"
@@ -90,6 +91,58 @@ func (h BillingHandler) GetOrgBilling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.Service.GetOrganizationBilling(r.Context(), user.ID, orgID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
+}
+
+func (h BillingHandler) ListOrgInvoices(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	orgID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_org_id", "organization id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+	limit := int64(20)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || n < 1 || n > 100 {
+			render.Error(w, http.StatusBadRequest, "invalid_limit", "limit は 1-100 の範囲で指定してください", chimw.GetReqID(r.Context()))
+			return
+		}
+		limit = n
+	}
+	out, err := h.Service.ListInvoices(r.Context(), user.ID, orgID, limit, strings.TrimSpace(r.URL.Query().Get("starting_after")))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, out)
+}
+
+func (h BillingHandler) GetOrgInvoice(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.AuthUserFromContext(r.Context())
+	if !ok {
+		render.Error(w, http.StatusUnauthorized, "unauthorized", "ログインが必要です", chimw.GetReqID(r.Context()))
+		return
+	}
+	orgID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, "invalid_org_id", "organization id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+	invoiceID := strings.TrimSpace(chi.URLParam(r, "invoice_id"))
+	if invoiceID == "" {
+		render.Error(w, http.StatusBadRequest, "invalid_invoice_id", "invoice id が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
+	out, err := h.Service.GetInvoice(r.Context(), user.ID, orgID, invoiceID)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
