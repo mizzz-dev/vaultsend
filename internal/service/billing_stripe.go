@@ -77,11 +77,16 @@ func (c *StripeClient) ParseSubscriptionWebhook(payload []byte, signature string
 		Type string `json:"type"`
 		Data struct {
 			Object struct {
-				ID               string            `json:"id"`
-				Status           string            `json:"status"`
-				Customer         string            `json:"customer"`
-				CurrentPeriodEnd int64             `json:"current_period_end"`
-				Metadata         map[string]string `json:"metadata"`
+				ID               string `json:"id"`
+				Status           string `json:"status"`
+				Customer         string `json:"customer"`
+				CurrentPeriodEnd int64  `json:"current_period_end"`
+				Items            struct {
+					Data []struct {
+						Quantity int64 `json:"quantity"`
+					} `json:"data"`
+				} `json:"items"`
+				Metadata map[string]string `json:"metadata"`
 			} `json:"object"`
 		} `json:"data"`
 	}
@@ -96,14 +101,88 @@ func (c *StripeClient) ParseSubscriptionWebhook(payload []byte, signature string
 		t := time.Unix(evt.Data.Object.CurrentPeriodEnd, 0).UTC()
 		periodEnd = &t
 	}
+	seatCount := int64(1)
+	if len(evt.Data.Object.Items.Data) > 0 && evt.Data.Object.Items.Data[0].Quantity > 0 {
+		seatCount = evt.Data.Object.Items.Data[0].Quantity
+	}
 	return WebhookSubscriptionEvent{
 		Type:                 evt.Type,
 		StripeSubscriptionID: evt.Data.Object.ID,
 		StripeCustomerID:     evt.Data.Object.Customer,
+		SeatCount:            seatCount,
 		Status:               evt.Data.Object.Status,
 		CurrentPeriodEnd:     periodEnd,
 		Metadata:             evt.Data.Object.Metadata,
 	}, nil
+}
+
+func (c *StripeClient) UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error {
+	if quantity < 1 {
+		quantity = 1
+	}
+	itemID, err := c.getSubscriptionItemID(ctx, subscriptionID)
+	if err != nil {
+		return err
+	}
+	form := url.Values{}
+	form.Set("items[0][id]", itemID)
+	form.Set("items[0][quantity]", strconv.FormatInt(quantity, 10))
+	form.Set("proration_behavior", "none")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.stripe.com/v1/subscriptions/"+url.PathEscape(subscriptionID), strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.SecretKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 400 {
+		return fmt.Errorf("stripe update subscription failed status=%d body=%s", res.StatusCode, string(body))
+	}
+	return nil
+}
+
+func (c *StripeClient) getSubscriptionItemID(ctx context.Context, subscriptionID string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.stripe.com/v1/subscriptions/"+url.PathEscape(subscriptionID), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.SecretKey)
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 400 {
+		return "", fmt.Errorf("stripe get subscription failed status=%d body=%s", res.StatusCode, string(body))
+	}
+	var out struct {
+		Items struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", err
+	}
+	if len(out.Items.Data) == 0 || strings.TrimSpace(out.Items.Data[0].ID) == "" {
+		return "", fmt.Errorf("subscription item not found")
+	}
+	return out.Items.Data[0].ID, nil
 }
 
 func verifyStripeSignature(payload []byte, signature, secret string) bool {

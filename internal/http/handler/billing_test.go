@@ -59,6 +59,9 @@ func (s *handlerBillingStripe) CreateCheckoutSession(ctx context.Context, in ser
 func (s *handlerBillingStripe) ParseSubscriptionWebhook(payload []byte, signature string) (service.WebhookSubscriptionEvent, error) {
 	return service.WebhookSubscriptionEvent{}, nil
 }
+func (s *handlerBillingStripe) UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error {
+	return nil
+}
 
 func TestBillingCheckout_Unauthorized(t *testing.T) {
 	h := BillingHandler{Service: &service.BillingService{}}

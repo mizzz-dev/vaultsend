@@ -20,7 +20,16 @@ type OrgStore interface {
 	GetOrganizationMember(ctx context.Context, orgID uuid.UUID, userID uuid.UUID) (store.OrganizationMember, error)
 }
 
-type OrgService struct{ Store OrgStore }
+type OrgBillingService interface {
+	GetSeatLimit(ctx context.Context, orgID uuid.UUID) (int64, error)
+	GetCurrentSeatUsage(ctx context.Context, orgID uuid.UUID) (int64, error)
+	SyncSeatCountWithStripe(ctx context.Context, orgID uuid.UUID) error
+}
+
+type OrgService struct {
+	Store   OrgStore
+	Billing OrgBillingService
+}
 
 type OrgOutput struct {
 	ID          uuid.UUID `json:"id"`
@@ -86,12 +95,36 @@ func (s *OrgService) AddMember(ctx context.Context, actorID, orgID, userID uuid.
 	if role != "owner" && role != "admin" && role != "member" {
 		return OrgMemberOutput{}, &APIError{Status: 400, Code: "invalid_role", Message: "role が不正です"}
 	}
+	if _, err := s.Store.GetOrganizationMember(ctx, orgID, userID); err == nil {
+		return OrgMemberOutput{}, &APIError{Status: 409, Code: "member_exists", Message: "既に所属済みです"}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return OrgMemberOutput{}, err
+	}
+	if s.Billing != nil {
+		seatLimit, err := s.Billing.GetSeatLimit(ctx, orgID)
+		if err != nil {
+			return OrgMemberOutput{}, err
+		}
+		currentUsage, err := s.Billing.GetCurrentSeatUsage(ctx, orgID)
+		if err != nil {
+			return OrgMemberOutput{}, err
+		}
+		if currentUsage >= seatLimit {
+			return OrgMemberOutput{}, newPlanLimitError("SEAT_LIMIT", "メンバー数の上限に達しています")
+		}
+	}
 	m, err := s.Store.AddMember(ctx, orgID, userID, role)
 	if errors.Is(err, store.ErrConflict) {
 		return OrgMemberOutput{}, &APIError{Status: 409, Code: "member_exists", Message: "既に所属済みです"}
 	}
 	if err != nil {
 		return OrgMemberOutput{}, err
+	}
+	if s.Billing != nil {
+		if err := s.Billing.SyncSeatCountWithStripe(ctx, orgID); err != nil {
+			_ = s.Store.RemoveMember(ctx, orgID, userID)
+			return OrgMemberOutput{}, err
+		}
 	}
 	return OrgMemberOutput{UserID: m.UserID, Role: m.Role}, nil
 }
@@ -106,9 +139,15 @@ func (s *OrgService) RemoveMember(ctx context.Context, actorID, orgID, userID uu
 	}
 	if err := s.Store.RemoveMember(ctx, orgID, userID); errors.Is(err, store.ErrNotFound) {
 		return &APIError{Status: 404, Code: "member_not_found", Message: "member が見つかりません"}
-	} else {
+	} else if err != nil {
 		return err
 	}
+	if s.Billing != nil {
+		if err := s.Billing.SyncSeatCountWithStripe(ctx, orgID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *OrgService) ResolveUserOrgRole(ctx context.Context, userID, orgID uuid.UUID) (string, error) {

@@ -60,7 +60,7 @@ func main() {
 	}
 	billingSvc := &service.BillingService{Store: queries, Stripe: stripeClient, FrontendURL: cfg.FrontendURL}
 	uploadSvc.Billing = billingSvc
-	orgSvc := &service.OrgService{Store: queries}
+	orgSvc := &service.OrgService{Store: queries, Billing: billingSvc}
 
 	mailQueue := queue.NewSQSQueue(sqs.NewFromConfig(awsCfg), cfg.SQSQueueURL)
 	shipmentSvc := &service.ShipmentService{Store: queries, Queue: mailQueue, FrontendURL: cfg.FrontendURL, Billing: billingSvc, Org: orgSvc}
