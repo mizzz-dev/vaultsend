@@ -15,6 +15,7 @@ type Subscription struct {
 	OrganizationID       *uuid.UUID
 	StripeCustomerID     *string
 	StripeSubscriptionID string
+	SeatCount            int64
 	Plan                 string
 	Status               string
 	CurrentPeriodEnd     *time.Time
@@ -27,6 +28,7 @@ type UpsertSubscriptionParams struct {
 	OrganizationID       *uuid.UUID
 	StripeCustomerID     *string
 	StripeSubscriptionID string
+	SeatCount            int64
 	Plan                 string
 	Status               string
 	CurrentPeriodEnd     *time.Time
@@ -34,23 +36,25 @@ type UpsertSubscriptionParams struct {
 
 func (q *Queries) UpsertSubscription(ctx context.Context, arg UpsertSubscriptionParams) (Subscription, error) {
 	const query = `
-INSERT INTO subscriptions (user_id, organization_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_end)
-VALUES ($1,$2,$3,$4,$5,$6,$7)
+INSERT INTO subscriptions (user_id, organization_id, stripe_customer_id, stripe_subscription_id, seat_count, plan, status, current_period_end)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 ON CONFLICT (stripe_subscription_id) DO UPDATE
 SET user_id = EXCLUDED.user_id,
     organization_id = EXCLUDED.organization_id,
     stripe_customer_id = EXCLUDED.stripe_customer_id,
+    seat_count = EXCLUDED.seat_count,
     plan = EXCLUDED.plan,
     status = EXCLUDED.status,
     current_period_end = EXCLUDED.current_period_end,
     updated_at = now()
-RETURNING id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_end, created_at, updated_at`
+RETURNING id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, seat_count, plan, status, current_period_end, created_at, updated_at`
 	var out Subscription
 	err := q.db.QueryRow(ctx, query,
 		arg.UserID,
 		arg.OrganizationID,
 		arg.StripeCustomerID,
 		arg.StripeSubscriptionID,
+		arg.SeatCount,
 		arg.Plan,
 		arg.Status,
 		arg.CurrentPeriodEnd,
@@ -60,6 +64,7 @@ RETURNING id, user_id, organization_id, stripe_customer_id, stripe_subscription_
 		&out.OrganizationID,
 		&out.StripeCustomerID,
 		&out.StripeSubscriptionID,
+		&out.SeatCount,
 		&out.Plan,
 		&out.Status,
 		&out.CurrentPeriodEnd,
@@ -71,7 +76,7 @@ RETURNING id, user_id, organization_id, stripe_customer_id, stripe_subscription_
 
 func (q *Queries) GetLatestSubscriptionByUserID(ctx context.Context, userID uuid.UUID) (Subscription, error) {
 	const query = `
-SELECT id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_end, created_at, updated_at
+SELECT id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, seat_count, plan, status, current_period_end, created_at, updated_at
 FROM subscriptions
 WHERE user_id = $1
 ORDER BY updated_at DESC
@@ -83,6 +88,7 @@ LIMIT 1`
 		&out.OrganizationID,
 		&out.StripeCustomerID,
 		&out.StripeSubscriptionID,
+		&out.SeatCount,
 		&out.Plan,
 		&out.Status,
 		&out.CurrentPeriodEnd,
@@ -97,7 +103,7 @@ LIMIT 1`
 
 func (q *Queries) GetLatestSubscriptionByOrgID(ctx context.Context, orgID uuid.UUID) (Subscription, error) {
 	const query = `
-SELECT id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_end, created_at, updated_at
+SELECT id, user_id, organization_id, stripe_customer_id, stripe_subscription_id, seat_count, plan, status, current_period_end, created_at, updated_at
 FROM subscriptions
 WHERE organization_id = $1
 ORDER BY updated_at DESC
@@ -109,6 +115,7 @@ LIMIT 1`
 		&out.OrganizationID,
 		&out.StripeCustomerID,
 		&out.StripeSubscriptionID,
+		&out.SeatCount,
 		&out.Plan,
 		&out.Status,
 		&out.CurrentPeriodEnd,

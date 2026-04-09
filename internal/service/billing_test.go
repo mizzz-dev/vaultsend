@@ -71,8 +71,11 @@ func (f *fakeBillingStore) CountOrganizationMembers(ctx context.Context, orgID u
 }
 
 type fakeStripeGateway struct {
-	checkout CheckoutSession
-	event    WebhookSubscriptionEvent
+	checkout         CheckoutSession
+	event            WebhookSubscriptionEvent
+	updatedSubID     string
+	updatedQuantity  int64
+	updateShouldFail bool
 }
 
 func (f *fakeStripeGateway) CreateCheckoutSession(ctx context.Context, in CheckoutInput) (CheckoutSession, error) {
@@ -80,6 +83,14 @@ func (f *fakeStripeGateway) CreateCheckoutSession(ctx context.Context, in Checko
 }
 func (f *fakeStripeGateway) ParseSubscriptionWebhook(payload []byte, signature string) (WebhookSubscriptionEvent, error) {
 	return f.event, nil
+}
+func (f *fakeStripeGateway) UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error {
+	if f.updateShouldFail {
+		return context.DeadlineExceeded
+	}
+	f.updatedSubID = subscriptionID
+	f.updatedQuantity = quantity
+	return nil
 }
 
 func TestBilling_EnforceUploadLimit_FreeVsPro(t *testing.T) {
@@ -117,6 +128,7 @@ func TestBilling_HandleWebhook_UserUpsert(t *testing.T) {
 		Type:                 "customer.subscription.created",
 		StripeSubscriptionID: "sub_123",
 		StripeCustomerID:     "cus_123",
+		SeatCount:            3,
 		Status:               "active",
 		Metadata:             map[string]string{"user_id": userID.String(), "plan": "pro"},
 	}}}
@@ -125,6 +137,9 @@ func TestBilling_HandleWebhook_UserUpsert(t *testing.T) {
 	}
 	if st.upserted.UserID == nil || *st.upserted.UserID != userID || st.upserted.Plan != PlanPro {
 		t.Fatalf("unexpected user upsert: %+v", st.upserted)
+	}
+	if st.upserted.SeatCount != 3 {
+		t.Fatalf("unexpected seat count: %+v", st.upserted)
 	}
 }
 
@@ -135,6 +150,7 @@ func TestBilling_HandleWebhook_OrgUpsert(t *testing.T) {
 		Type:                 "customer.subscription.updated",
 		StripeSubscriptionID: "sub_org_123",
 		StripeCustomerID:     "cus_org_123",
+		SeatCount:            7,
 		Status:               "active",
 		Metadata:             map[string]string{"organization_id": orgID.String(), "plan": "pro"},
 	}}}
@@ -143,6 +159,9 @@ func TestBilling_HandleWebhook_OrgUpsert(t *testing.T) {
 	}
 	if st.upsertedOrg.OrganizationID == nil || *st.upsertedOrg.OrganizationID != orgID {
 		t.Fatalf("unexpected org upsert: %+v", st.upsertedOrg)
+	}
+	if st.upsertedOrg.SeatCount != 7 {
+		t.Fatalf("unexpected org seat count: %+v", st.upsertedOrg)
 	}
 }
 
@@ -159,6 +178,25 @@ func TestBilling_CreateCheckout(t *testing.T) {
 	}
 	if out.SessionID == "" || out.URL == "" {
 		t.Fatalf("unexpected output: %+v", out)
+	}
+}
+
+func TestBilling_SyncSeatCountWithStripe(t *testing.T) {
+	orgID := uuid.New()
+	st := &fakeBillingStore{
+		orgSub:      store.Subscription{OrganizationID: &orgID, StripeSubscriptionID: "sub_org_123", Plan: PlanPro, Status: "active"},
+		memberCount: 4,
+	}
+	sg := &fakeStripeGateway{}
+	svc := &BillingService{Store: st, Stripe: sg}
+	if err := svc.SyncSeatCountWithStripe(context.Background(), orgID); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sg.updatedSubID != "sub_org_123" || sg.updatedQuantity != 4 {
+		t.Fatalf("unexpected stripe call: sub=%s qty=%d", sg.updatedSubID, sg.updatedQuantity)
+	}
+	if st.upsertedOrg.SeatCount != 4 {
+		t.Fatalf("unexpected cached seat count: %+v", st.upsertedOrg)
 	}
 }
 

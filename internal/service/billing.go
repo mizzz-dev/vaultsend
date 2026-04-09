@@ -86,12 +86,14 @@ type CheckoutOutput struct {
 type StripeGateway interface {
 	CreateCheckoutSession(ctx context.Context, in CheckoutInput) (CheckoutSession, error)
 	ParseSubscriptionWebhook(payload []byte, signature string) (WebhookSubscriptionEvent, error)
+	UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error
 }
 
 type WebhookSubscriptionEvent struct {
 	Type                 string
 	StripeSubscriptionID string
 	StripeCustomerID     string
+	SeatCount            int64
 	Status               string
 	CurrentPeriodEnd     *time.Time
 	Metadata             map[string]string
@@ -192,6 +194,10 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 	if evt.Type == "customer.subscription.deleted" {
 		status = "canceled"
 	}
+	seatCount := evt.SeatCount
+	if seatCount < 1 {
+		seatCount = 1
+	}
 	var upsertErr error
 	if orgIDRaw != "" {
 		orgID, parseErr := uuid.Parse(orgIDRaw)
@@ -202,6 +208,7 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 			OrganizationID:       &orgID,
 			StripeCustomerID:     ptrOrNil(evt.StripeCustomerID),
 			StripeSubscriptionID: evt.StripeSubscriptionID,
+			SeatCount:            seatCount,
 			Plan:                 plan,
 			Status:               status,
 			CurrentPeriodEnd:     evt.CurrentPeriodEnd,
@@ -218,6 +225,7 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 			UserID:               &userID,
 			StripeCustomerID:     ptrOrNil(evt.StripeCustomerID),
 			StripeSubscriptionID: evt.StripeSubscriptionID,
+			SeatCount:            seatCount,
 			Plan:                 plan,
 			Status:               status,
 			CurrentPeriodEnd:     evt.CurrentPeriodEnd,
@@ -343,12 +351,15 @@ func (s *BillingService) EnforceShipmentLimit(ctx context.Context, userID, orgID
 }
 
 type OrganizationBillingDetails struct {
-	Plan           string         `json:"plan"`
-	Status         string         `json:"status"`
-	Usage          PlanUsage      `json:"usage"`
-	MembersCount   int64          `json:"members_count"`
-	NextBillingAt  *time.Time     `json:"next_billing_at,omitempty"`
-	RemainingQuota RemainingQuota `json:"remaining"`
+	Plan             string         `json:"plan"`
+	Status           string         `json:"status"`
+	Usage            PlanUsage      `json:"usage"`
+	MembersCount     int64          `json:"members_count"`
+	SeatLimit        int64          `json:"seat_limit"`
+	CurrentSeatUsage int64          `json:"current_seat_usage"`
+	RemainingSeats   int64          `json:"remaining_seats"`
+	NextBillingAt    *time.Time     `json:"next_billing_at,omitempty"`
+	RemainingQuota   RemainingQuota `json:"remaining"`
 }
 
 func (s *BillingService) GetOrganizationBilling(ctx context.Context, actorID, orgID uuid.UUID) (OrganizationBillingDetails, error) {
@@ -370,18 +381,96 @@ func (s *BillingService) GetOrganizationBilling(ctx context.Context, actorID, or
 	if err != nil {
 		return OrganizationBillingDetails{}, fmt.Errorf("count organization members: %w", err)
 	}
+	seatLimit, err := s.GetSeatLimit(ctx, orgID)
+	if err != nil {
+		return OrganizationBillingDetails{}, err
+	}
+	usage, err := s.GetCurrentSeatUsage(ctx, orgID)
+	if err != nil {
+		return OrganizationBillingDetails{}, err
+	}
+	remainingSeats := seatLimit - usage
+	if remainingSeats < 0 {
+		remainingSeats = 0
+	}
 	var nextBillingAt *time.Time
 	if sub, subErr := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID); subErr == nil {
 		nextBillingAt = sub.CurrentPeriodEnd
 	}
 	return OrganizationBillingDetails{
-		Plan:           planDetails.Plan,
-		Status:         planDetails.Status,
-		Usage:          planDetails.Usage,
-		MembersCount:   count,
-		NextBillingAt:  nextBillingAt,
-		RemainingQuota: planDetails.Remaining,
+		Plan:             planDetails.Plan,
+		Status:           planDetails.Status,
+		Usage:            planDetails.Usage,
+		MembersCount:     count,
+		SeatLimit:        seatLimit,
+		CurrentSeatUsage: usage,
+		RemainingSeats:   remainingSeats,
+		NextBillingAt:    nextBillingAt,
+		RemainingQuota:   planDetails.Remaining,
 	}, nil
+}
+
+func (s *BillingService) GetSeatLimit(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	sub, err := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return 1, nil
+		}
+		return 0, fmt.Errorf("get latest organization subscription: %w", err)
+	}
+	if !isPaidActive(sub.Status) || sub.Plan != PlanPro {
+		return 1, nil
+	}
+	if sub.SeatCount < 1 {
+		return 1, nil
+	}
+	return sub.SeatCount, nil
+}
+
+func (s *BillingService) GetCurrentSeatUsage(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	usage, err := s.Store.CountOrganizationMembers(ctx, orgID)
+	if err != nil {
+		return 0, fmt.Errorf("count organization members: %w", err)
+	}
+	return usage, nil
+}
+
+func (s *BillingService) SyncSeatCountWithStripe(ctx context.Context, orgID uuid.UUID) error {
+	if s.Stripe == nil {
+		return &APIError{Status: 503, Code: "billing_unavailable", Message: "billing が利用できません"}
+	}
+	sub, err := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("get latest organization subscription: %w", err)
+	}
+	if sub.StripeSubscriptionID == "" || !isPaidActive(sub.Status) || sub.Plan != PlanPro {
+		return nil
+	}
+	usage, err := s.GetCurrentSeatUsage(ctx, orgID)
+	if err != nil {
+		return err
+	}
+	if usage < 1 {
+		usage = 1
+	}
+	if err := s.Stripe.UpdateSubscriptionQuantity(ctx, sub.StripeSubscriptionID, usage); err != nil {
+		return fmt.Errorf("update stripe subscription quantity: %w", err)
+	}
+	if _, err := s.Store.UpsertOrgSubscription(ctx, store.UpsertSubscriptionParams{
+		OrganizationID:       &orgID,
+		StripeCustomerID:     sub.StripeCustomerID,
+		StripeSubscriptionID: sub.StripeSubscriptionID,
+		SeatCount:            usage,
+		Plan:                 sub.Plan,
+		Status:               sub.Status,
+		CurrentPeriodEnd:     sub.CurrentPeriodEnd,
+	}); err != nil {
+		return fmt.Errorf("upsert organization subscription: %w", err)
+	}
+	return nil
 }
 
 func (s *BillingService) MarshalPlan(plan UserPlan) json.RawMessage {

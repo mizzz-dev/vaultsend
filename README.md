@@ -260,12 +260,18 @@ make migrate-down
 - プラン
   - `free`: 最大ファイルサイズ 1GB / 保存期間 3日 / 月間 shipment 50件まで
   - `pro`: 最大ファイルサイズ 10GB / 保存期間 7日 / shipment 制限なし（MVP）
+- Seat 課金（organization）
+  - seat = organization に所属できるユーザー数（`organization_members` の件数）
+  - seat usage = active member 数（owner/admin/member を含む）
+  - seat limit = Stripe Subscription の `quantity`（DB `subscriptions.seat_count` にキャッシュ）
+  - member 追加/削除時に Stripe subscription quantity を同期（`proration_behavior=none`）
 - Checkout
   - `POST /v1/billing/checkout`（ログイン必須）で Stripe Checkout Session URL を発行します。
   - body に `organization_id` を渡すと organization 単位で Checkout を作成します（owner のみ）。
 - Webhook
   - `POST /v1/billing/webhook` で `customer.subscription.created|updated|deleted` を受け取り、
     `subscriptions` テーブルへ反映します（`metadata.organization_id` がある場合は org subscription を更新）。
+  - `items.data[0].quantity` を `subscriptions.seat_count` に反映します。
 
 - プラン情報API
   - `GET /v1/billing/plan`（ログイン必須）
@@ -277,7 +283,7 @@ make migrate-down
     - `remaining.remaining_shipments`
 - 制限エラー（plan_limit系）共通フォーマット
   - `error`: `plan_limit_exceeded`
-  - `code`: `FILE_SIZE_LIMIT | STORAGE_DAYS_LIMIT | MONTHLY_SHIPMENT_LIMIT`
+  - `code`: `FILE_SIZE_LIMIT | STORAGE_DAYS_LIMIT | MONTHLY_SHIPMENT_LIMIT | SEAT_LIMIT`
   - `message`: ユーザー向け説明
   - `upgrade_required`: `true`
   - `upgrade_url`: `/settings/billing`
@@ -295,7 +301,23 @@ make migrate-down
   - `usage.current_month_shipments`
   - `usage.current_storage_bytes`
   - `members_count`
+  - `seat_limit`
+  - `current_seat_usage`
+  - `remaining_seats`
   - `next_billing_at`
+
+### seat 制限エラー例（member 追加時）
+
+`POST /v1/orgs/{id}/members` で seat 上限超過時:
+
+```json
+{
+  "error": "plan_limit_exceeded",
+  "code": "SEAT_LIMIT",
+  "message": "メンバー数の上限に達しています",
+  "upgrade_required": true
+}
+```
 
 ### Stripe webhook ローカル設定例
 
