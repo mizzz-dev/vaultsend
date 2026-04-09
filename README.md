@@ -306,6 +306,91 @@ make migrate-down
   - `remaining_seats`
   - `next_billing_at`
 
+### Organization Invoice API（Stripe連携）
+
+- 前提
+  - invoice は Stripe を source of truth とし、DB へは保存しません。
+  - `subscriptions.stripe_customer_id` を使って organization に紐づく請求書を取得します。
+  - 閲覧権限は organization の `owner/admin` のみです。
+- `GET /v1/orgs/{id}/invoices`（ログイン必須、owner/admin）
+  - query:
+    - `limit`（任意, 1-100, default 20）
+    - `starting_after`（任意, Stripe cursor）
+  - レスポンス:
+    - `invoices[].invoice_id`
+    - `invoices[].amount`
+    - `invoices[].currency`
+    - `invoices[].status`（`draft | open | paid | uncollectible | void`）
+    - `invoices[].hosted_invoice_url`
+    - `invoices[].invoice_pdf`
+    - `invoices[].created_at`
+    - `invoices[].paid_at`
+    - `has_more`
+    - `next_starting_after`
+- `GET /v1/orgs/{id}/invoices/{invoice_id}`（ログイン必須、owner/admin）
+  - レスポンス:
+    - `invoice_id`
+    - `amount`
+    - `currency`
+    - `status`
+    - `payment_status`
+    - `payment_method`（Stripe依存）
+    - `tax.amount`（仮置き）
+    - `line_items[]`
+    - `hosted_invoice_url`
+    - `invoice_pdf`
+    - `created_at`
+    - `paid_at`
+
+#### Invoice List レスポンス例
+
+```json
+{
+  "invoices": [
+    {
+      "invoice_id": "in_123",
+      "amount": 1200,
+      "currency": "jpy",
+      "status": "paid",
+      "hosted_invoice_url": "https://invoice.stripe.com/...",
+      "invoice_pdf": "https://pay.stripe.com/invoice/...",
+      "created_at": "2026-04-01T00:00:00Z",
+      "paid_at": "2026-04-02T00:00:00Z"
+    }
+  ],
+  "has_more": false
+}
+```
+
+#### Invoice Detail レスポンス例
+
+```json
+{
+  "invoice_id": "in_123",
+  "amount": 1200,
+  "currency": "jpy",
+  "status": "paid",
+  "payment_status": "succeeded",
+  "payment_method": "pm_123",
+  "tax": {
+    "amount": 100
+  },
+  "line_items": [
+    {
+      "id": "il_123",
+      "description": "Pro Plan",
+      "amount": 1200,
+      "currency": "jpy",
+      "quantity": 1
+    }
+  ],
+  "hosted_invoice_url": "https://invoice.stripe.com/...",
+  "invoice_pdf": "https://pay.stripe.com/invoice/...",
+  "created_at": "2026-04-01T00:00:00Z",
+  "paid_at": "2026-04-02T00:00:00Z"
+}
+```
+
 ### seat 制限エラー例（member 追加時）
 
 `POST /v1/orgs/{id}/members` で seat 上限超過時:

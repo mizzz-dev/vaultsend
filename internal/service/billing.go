@@ -87,6 +87,8 @@ type StripeGateway interface {
 	CreateCheckoutSession(ctx context.Context, in CheckoutInput) (CheckoutSession, error)
 	ParseSubscriptionWebhook(payload []byte, signature string) (WebhookSubscriptionEvent, error)
 	UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error
+	ListInvoices(ctx context.Context, customerID string, limit int64, startingAfter string) (StripeInvoiceList, error)
+	GetInvoice(ctx context.Context, invoiceID string) (StripeInvoice, error)
 }
 
 type WebhookSubscriptionEvent struct {
@@ -103,6 +105,73 @@ type BillingService struct {
 	Store       BillingStore
 	Stripe      StripeGateway
 	FrontendURL string
+}
+
+type StripeInvoiceList struct {
+	Data    []StripeInvoice
+	HasMore bool
+}
+
+type StripeInvoice struct {
+	ID               string
+	CustomerID       string
+	AmountDue        int64
+	Currency         string
+	Status           string
+	HostedInvoiceURL string
+	InvoicePDF       string
+	CreatedAt        time.Time
+	PaidAt           *time.Time
+	TaxAmount        int64
+	PaymentStatus    string
+	PaymentMethod    string
+	LineItems        []InvoiceLineItem
+}
+
+type InvoiceLineItem struct {
+	ID          string     `json:"id"`
+	Description string     `json:"description"`
+	Amount      int64      `json:"amount"`
+	Currency    string     `json:"currency"`
+	Quantity    int64      `json:"quantity"`
+	PeriodStart *time.Time `json:"period_start,omitempty"`
+	PeriodEnd   *time.Time `json:"period_end,omitempty"`
+}
+
+type ListInvoicesOutput struct {
+	Invoices          []InvoiceSummary `json:"invoices"`
+	HasMore           bool             `json:"has_more"`
+	NextStartingAfter string           `json:"next_starting_after,omitempty"`
+}
+
+type InvoiceSummary struct {
+	InvoiceID        string     `json:"invoice_id"`
+	Amount           int64      `json:"amount"`
+	Currency         string     `json:"currency"`
+	Status           string     `json:"status"`
+	HostedInvoiceURL string     `json:"hosted_invoice_url,omitempty"`
+	InvoicePDF       string     `json:"invoice_pdf,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	PaidAt           *time.Time `json:"paid_at,omitempty"`
+}
+
+type InvoiceDetail struct {
+	InvoiceID        string            `json:"invoice_id"`
+	Amount           int64             `json:"amount"`
+	Currency         string            `json:"currency"`
+	Status           string            `json:"status"`
+	PaymentStatus    string            `json:"payment_status"`
+	PaymentMethod    string            `json:"payment_method,omitempty"`
+	Tax              InvoiceTaxSummary `json:"tax"`
+	HostedInvoiceURL string            `json:"hosted_invoice_url,omitempty"`
+	InvoicePDF       string            `json:"invoice_pdf,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	PaidAt           *time.Time        `json:"paid_at,omitempty"`
+	LineItems        []InvoiceLineItem `json:"line_items"`
+}
+
+type InvoiceTaxSummary struct {
+	Amount int64 `json:"amount"`
 }
 
 func (s *BillingService) CreateCheckout(ctx context.Context, userID uuid.UUID) (CheckoutOutput, error) {
@@ -410,6 +479,83 @@ func (s *BillingService) GetOrganizationBilling(ctx context.Context, actorID, or
 	}, nil
 }
 
+func (s *BillingService) ListInvoices(ctx context.Context, actorID, orgID uuid.UUID, limit int64, startingAfter string) (ListInvoicesOutput, error) {
+	if s.Stripe == nil {
+		return ListInvoicesOutput{}, &APIError{Status: 503, Code: "billing_unavailable", Message: "billing が利用できません"}
+	}
+	if err := s.requireOrganizationInvoiceAccess(ctx, actorID, orgID); err != nil {
+		return ListInvoicesOutput{}, err
+	}
+	customerID, err := s.getOrganizationStripeCustomerID(ctx, orgID)
+	if err != nil {
+		return ListInvoicesOutput{}, err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	invoiceList, err := s.Stripe.ListInvoices(ctx, customerID, limit, startingAfter)
+	if err != nil {
+		return ListInvoicesOutput{}, fmt.Errorf("list stripe invoices: %w", err)
+	}
+	out := ListInvoicesOutput{
+		Invoices: make([]InvoiceSummary, 0, len(invoiceList.Data)),
+		HasMore:  invoiceList.HasMore,
+	}
+	for _, inv := range invoiceList.Data {
+		out.Invoices = append(out.Invoices, InvoiceSummary{
+			InvoiceID:        inv.ID,
+			Amount:           inv.AmountDue,
+			Currency:         strings.ToLower(inv.Currency),
+			Status:           normalizeInvoiceStatus(inv.Status),
+			HostedInvoiceURL: inv.HostedInvoiceURL,
+			InvoicePDF:       inv.InvoicePDF,
+			CreatedAt:        inv.CreatedAt,
+			PaidAt:           inv.PaidAt,
+		})
+	}
+	if out.HasMore && len(out.Invoices) > 0 {
+		out.NextStartingAfter = out.Invoices[len(out.Invoices)-1].InvoiceID
+	}
+	return out, nil
+}
+
+func (s *BillingService) GetInvoice(ctx context.Context, actorID, orgID uuid.UUID, invoiceID string) (InvoiceDetail, error) {
+	if s.Stripe == nil {
+		return InvoiceDetail{}, &APIError{Status: 503, Code: "billing_unavailable", Message: "billing が利用できません"}
+	}
+	if strings.TrimSpace(invoiceID) == "" {
+		return InvoiceDetail{}, &APIError{Status: 400, Code: "invalid_invoice_id", Message: "invoice id が不正です"}
+	}
+	if err := s.requireOrganizationInvoiceAccess(ctx, actorID, orgID); err != nil {
+		return InvoiceDetail{}, err
+	}
+	customerID, err := s.getOrganizationStripeCustomerID(ctx, orgID)
+	if err != nil {
+		return InvoiceDetail{}, err
+	}
+	inv, err := s.Stripe.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return InvoiceDetail{}, fmt.Errorf("get stripe invoice: %w", err)
+	}
+	if strings.TrimSpace(inv.CustomerID) != customerID {
+		return InvoiceDetail{}, &APIError{Status: 404, Code: "invoice_not_found", Message: "invoice が見つかりません"}
+	}
+	return InvoiceDetail{
+		InvoiceID:        inv.ID,
+		Amount:           inv.AmountDue,
+		Currency:         strings.ToLower(inv.Currency),
+		Status:           normalizeInvoiceStatus(inv.Status),
+		PaymentStatus:    normalizeInvoiceStatus(inv.PaymentStatus),
+		PaymentMethod:    inv.PaymentMethod,
+		Tax:              InvoiceTaxSummary{Amount: inv.TaxAmount},
+		HostedInvoiceURL: inv.HostedInvoiceURL,
+		InvoicePDF:       inv.InvoicePDF,
+		CreatedAt:        inv.CreatedAt,
+		PaidAt:           inv.PaidAt,
+		LineItems:        inv.LineItems,
+	}, nil
+}
+
 func (s *BillingService) GetSeatLimit(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	sub, err := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID)
 	if err != nil {
@@ -513,5 +659,43 @@ func newPlanLimitError(code, message string) *APIError {
 		UpgradeRequired: true,
 		UpgradeURL:      "/settings/billing",
 		RecommendedPlan: RecommendedPlanPro,
+	}
+}
+
+func (s *BillingService) requireOrganizationInvoiceAccess(ctx context.Context, actorID, orgID uuid.UUID) error {
+	member, err := s.Store.GetOrganizationMember(ctx, orgID, actorID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &APIError{Status: 403, Code: "forbidden", Message: "organization へのアクセス権がありません"}
+		}
+		return fmt.Errorf("get organization member: %w", err)
+	}
+	if member.Role != "owner" && member.Role != "admin" {
+		return &APIError{Status: 403, Code: "forbidden", Message: "invoice は owner/admin のみ閲覧できます"}
+	}
+	return nil
+}
+
+func (s *BillingService) getOrganizationStripeCustomerID(ctx context.Context, orgID uuid.UUID) (string, error) {
+	sub, err := s.Store.GetLatestSubscriptionByOrgID(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return "", &APIError{Status: 404, Code: "billing_customer_not_found", Message: "organization の請求先情報が見つかりません"}
+		}
+		return "", fmt.Errorf("get latest organization subscription: %w", err)
+	}
+	if sub.StripeCustomerID == nil || strings.TrimSpace(*sub.StripeCustomerID) == "" {
+		return "", &APIError{Status: 404, Code: "billing_customer_not_found", Message: "organization の請求先情報が見つかりません"}
+	}
+	return strings.TrimSpace(*sub.StripeCustomerID), nil
+}
+
+func normalizeInvoiceStatus(status string) string {
+	s := strings.ToLower(strings.TrimSpace(status))
+	switch s {
+	case "draft", "open", "paid", "uncollectible", "void":
+		return s
+	default:
+		return s
 	}
 }

@@ -76,6 +76,8 @@ type fakeStripeGateway struct {
 	updatedSubID     string
 	updatedQuantity  int64
 	updateShouldFail bool
+	invoices         StripeInvoiceList
+	invoice          StripeInvoice
 }
 
 func (f *fakeStripeGateway) CreateCheckoutSession(ctx context.Context, in CheckoutInput) (CheckoutSession, error) {
@@ -91,6 +93,12 @@ func (f *fakeStripeGateway) UpdateSubscriptionQuantity(ctx context.Context, subs
 	f.updatedSubID = subscriptionID
 	f.updatedQuantity = quantity
 	return nil
+}
+func (f *fakeStripeGateway) ListInvoices(ctx context.Context, customerID string, limit int64, startingAfter string) (StripeInvoiceList, error) {
+	return f.invoices, nil
+}
+func (f *fakeStripeGateway) GetInvoice(ctx context.Context, invoiceID string) (StripeInvoice, error) {
+	return f.invoice, nil
 }
 
 func TestBilling_EnforceUploadLimit_FreeVsPro(t *testing.T) {
@@ -250,5 +258,102 @@ func TestBilling_PlanLimitErrorFormat(t *testing.T) {
 	}
 	if apiErr.Error != PlanLimitErrorType || !apiErr.UpgradeRequired || apiErr.RecommendedPlan != RecommendedPlanPro {
 		t.Fatalf("unexpected api error: %+v", apiErr)
+	}
+}
+
+func TestBilling_ListInvoices_OK(t *testing.T) {
+	orgID := uuid.New()
+	actorID := uuid.New()
+	customerID := "cus_123"
+	createdAt := time.Now().UTC().Add(-time.Hour)
+	paidAt := time.Now().UTC()
+	svc := &BillingService{
+		Store: &fakeBillingStore{
+			memberRole: "admin",
+			orgSub: store.Subscription{
+				OrganizationID:   &orgID,
+				StripeCustomerID: &customerID,
+			},
+		},
+		Stripe: &fakeStripeGateway{
+			invoices: StripeInvoiceList{
+				Data: []StripeInvoice{{
+					ID:               "in_123",
+					AmountDue:        1200,
+					Currency:         "jpy",
+					Status:           "paid",
+					HostedInvoiceURL: "https://example.com/invoice",
+					InvoicePDF:       "https://example.com/invoice.pdf",
+					CreatedAt:        createdAt,
+					PaidAt:           &paidAt,
+				}},
+				HasMore: true,
+			},
+		},
+	}
+	out, err := svc.ListInvoices(context.Background(), actorID, orgID, 20, "")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(out.Invoices) != 1 || out.Invoices[0].InvoiceID != "in_123" {
+		t.Fatalf("unexpected invoices: %+v", out)
+	}
+	if !out.HasMore || out.NextStartingAfter != "in_123" {
+		t.Fatalf("unexpected pagination: %+v", out)
+	}
+}
+
+func TestBilling_GetInvoice_OK(t *testing.T) {
+	orgID := uuid.New()
+	actorID := uuid.New()
+	customerID := "cus_123"
+	now := time.Now().UTC()
+	svc := &BillingService{
+		Store: &fakeBillingStore{
+			memberRole: "owner",
+			orgSub: store.Subscription{
+				OrganizationID:   &orgID,
+				StripeCustomerID: &customerID,
+			},
+		},
+		Stripe: &fakeStripeGateway{
+			invoice: StripeInvoice{
+				ID:               "in_123",
+				CustomerID:       customerID,
+				AmountDue:        1500,
+				Currency:         "jpy",
+				Status:           "open",
+				PaymentStatus:    "requires_payment_method",
+				TaxAmount:        100,
+				CreatedAt:        now,
+				LineItems:        []InvoiceLineItem{{ID: "il_123", Amount: 1500}},
+				PaymentMethod:    "pm_123",
+				HostedInvoiceURL: "https://example.com/invoice",
+				InvoicePDF:       "https://example.com/invoice.pdf",
+			},
+		},
+	}
+	out, err := svc.GetInvoice(context.Background(), actorID, orgID, "in_123")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.InvoiceID != "in_123" || out.Tax.Amount != 100 {
+		t.Fatalf("unexpected detail: %+v", out)
+	}
+}
+
+func TestBilling_ListInvoices_ForbiddenForMember(t *testing.T) {
+	orgID := uuid.New()
+	actorID := uuid.New()
+	customerID := "cus_123"
+	svc := &BillingService{
+		Store: &fakeBillingStore{
+			memberRole: "member",
+			orgSub:     store.Subscription{OrganizationID: &orgID, StripeCustomerID: &customerID},
+		},
+		Stripe: &fakeStripeGateway{},
+	}
+	if _, err := svc.ListInvoices(context.Background(), actorID, orgID, 20, ""); err == nil {
+		t.Fatal("expected forbidden error")
 	}
 }

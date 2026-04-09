@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,33 @@ func (s *handlerBillingStripe) ParseSubscriptionWebhook(payload []byte, signatur
 }
 func (s *handlerBillingStripe) UpdateSubscriptionQuantity(ctx context.Context, subscriptionID string, quantity int64) error {
 	return nil
+}
+func (s *handlerBillingStripe) ListInvoices(ctx context.Context, customerID string, limit int64, startingAfter string) (service.StripeInvoiceList, error) {
+	now := time.Now().UTC()
+	return service.StripeInvoiceList{
+		Data: []service.StripeInvoice{{
+			ID:         "in_123",
+			CustomerID: customerID,
+			AmountDue:  1200,
+			Currency:   "jpy",
+			Status:     "paid",
+			CreatedAt:  now,
+		}},
+	}, nil
+}
+func (s *handlerBillingStripe) GetInvoice(ctx context.Context, invoiceID string) (service.StripeInvoice, error) {
+	now := time.Now().UTC()
+	return service.StripeInvoice{
+		ID:            invoiceID,
+		CustomerID:    "cus_123",
+		AmountDue:     1200,
+		Currency:      "jpy",
+		Status:        "paid",
+		CreatedAt:     now,
+		LineItems:     []service.InvoiceLineItem{{ID: "il_123", Amount: 1200}},
+		TaxAmount:     100,
+		PaymentStatus: "succeeded",
+	}, nil
 }
 
 func TestBillingCheckout_Unauthorized(t *testing.T) {
@@ -121,6 +149,71 @@ func TestBillingGetOrgBilling_OK(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.GetOrgBilling(w, req)
 	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestBillingListOrgInvoices_OK(t *testing.T) {
+	customerID := "cus_123"
+	svc := &service.BillingService{
+		Store:  &handlerBillingStoreWithCustomer{customerID: customerID},
+		Stripe: &handlerBillingStripe{},
+	}
+	h := BillingHandler{Service: svc}
+	orgID := uuid.New()
+	req := httptest.NewRequest(http.MethodGet, "/v1/orgs/"+orgID.String()+"/invoices?limit=10", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", orgID.String())
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "u@example.com"}))
+	w := httptest.NewRecorder()
+	h.ListOrgInvoices(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestBillingGetOrgInvoice_OK(t *testing.T) {
+	customerID := "cus_123"
+	svc := &service.BillingService{
+		Store:  &handlerBillingStoreWithCustomer{customerID: customerID},
+		Stripe: &handlerBillingStripe{},
+	}
+	h := BillingHandler{Service: svc}
+	orgID := uuid.New()
+	req := httptest.NewRequest(http.MethodGet, "/v1/orgs/"+orgID.String()+"/invoices/in_123", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", orgID.String())
+	rctx.URLParams.Add("invoice_id", "in_123")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "u@example.com"}))
+	w := httptest.NewRecorder()
+	h.GetOrgInvoice(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+type handlerBillingStoreWithCustomer struct {
+	handlerBillingStore
+	customerID string
+}
+
+func (h *handlerBillingStoreWithCustomer) GetLatestSubscriptionByOrgID(ctx context.Context, orgID uuid.UUID) (store.Subscription, error) {
+	return store.Subscription{OrganizationID: &orgID, StripeCustomerID: &h.customerID}, nil
+}
+
+func TestBillingListOrgInvoices_InvalidLimit(t *testing.T) {
+	h := BillingHandler{Service: &service.BillingService{}}
+	orgID := uuid.New()
+	req := httptest.NewRequest(http.MethodGet, "/v1/orgs/"+orgID.String()+"/invoices?limit=0", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", orgID.String())
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "u@example.com"}))
+	w := httptest.NewRecorder()
+	h.ListOrgInvoices(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_limit") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
