@@ -119,6 +119,35 @@ export type CreateShipmentResponse = {
   }>;
 };
 
+export type AccessFile = {
+  id: string;
+  original_name: string;
+  size_bytes: number;
+};
+
+export type AccessInspectResponse = {
+  requires_password: boolean;
+  shipment: {
+    id: string;
+    share_mode: "url_shared" | "recipient_restricted" | string;
+    subject: string;
+    message?: string;
+    expires_at: string;
+    max_download_count: number;
+  };
+  files: AccessFile[];
+};
+
+export type AccessVerifyResponse = {
+  granted: boolean;
+  expires_at?: string;
+};
+
+export type DownloadURLResponse = {
+  url: string;
+  expires_at: string;
+};
+
 export type ApiErrorPayload = {
   error?: string;
   code?: string;
