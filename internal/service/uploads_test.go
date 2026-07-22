@@ -69,6 +69,9 @@ func (f *fakeObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, k
 func (f *fakeObjectStore) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
 	return "https://example.com/download", nil
 }
+func (f *fakeObjectStore) DeleteObject(ctx context.Context, bucket, key string) error {
+	return nil
+}
 
 func TestCreateUploadSession_ValidationError(t *testing.T) {
 	svc := &UploadService{Store: &fakeStore{}, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
@@ -91,7 +94,24 @@ func TestCompleteUploadSession_Success(t *testing.T) {
 	}
 }
 
-func TestCompleteUploadSession_AlreadyCompleted(t *testing.T) {
+func TestCompleteUploadSession_AlreadyCompletedReturnsExistingFile(t *testing.T) {
+	shipmentID := uuid.New()
+	fileID := uuid.New()
+	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, FileID: &fileID, Status: "completed"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+	out, err := svc.CompleteUploadSession(context.Background(), CompleteUploadInput{UploadSessionID: fs.session.ID, Parts: []storage.CompletedPart{{PartNumber: 1, ETag: "etag"}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.FileID != fileID || out.ShipmentID != shipmentID || out.Status != "completed" {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+	if fs.completeCalled {
+		t.Fatal("completed session must not create another file")
+	}
+}
+
+func TestCompleteUploadSession_CompletedWithoutFileReturnsConflict(t *testing.T) {
 	shipmentID := uuid.New()
 	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, Status: "completed"}}
 	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
