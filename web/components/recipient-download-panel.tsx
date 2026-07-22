@@ -42,7 +42,7 @@ export function RecipientDownloadPanel() {
     try {
       const response = await api.inspectAccess(token);
       setData(response);
-      setIsVerified(!response.requires_password);
+      setIsVerified(response.verified);
     } catch (caught) {
       setFatalError(toFatalError(caught));
     } finally {
