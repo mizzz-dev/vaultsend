@@ -78,6 +78,47 @@ export type ShipmentDetail = {
   recipient_summaries: ShipmentRecipientSummary[];
 };
 
+export type PresignedUploadPart = {
+  part_number: number;
+  presigned_url: string;
+};
+
+export type CreateUploadResponse = {
+  upload_session_id: string;
+  shipment_id: string;
+  object_key: string;
+  s3_upload_id: string;
+  part_size: number;
+  parts: PresignedUploadPart[];
+  expires_at: string;
+};
+
+export type CompleteUploadResponse = {
+  upload_session_id: string;
+  file_id: string;
+  shipment_id: string;
+  status: string;
+};
+
+export type CreateShipmentResponse = {
+  id: string;
+  status: string;
+  share_mode: string;
+  expires_at: string;
+  max_download_count: number;
+  access_url?: string;
+  recipients: Array<{
+    id: string;
+    email: string;
+    status: string;
+  }>;
+  files: Array<{
+    id: string;
+    original_name: string;
+    size_bytes: number;
+  }>;
+};
+
 export type ApiErrorPayload = {
   error?: string;
   code?: string;

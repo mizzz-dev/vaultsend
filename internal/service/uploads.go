@@ -17,7 +17,9 @@ import (
 const (
 	defaultPartSizeBytes int32 = 8 * 1024 * 1024
 	defaultMaxFileSize   int64 = 10 * 1024 * 1024 * 1024 // 設計書の仮置き値: 10GB
-	defaultMaxParts            = 1000                    // 仮置き: レスポンス肥大化を防ぐ上限
+	defaultMaxParts            = 1000                    // Presigned URLレスポンスの肥大化を防ぐ上限
+	oneMiB               int64 = 1024 * 1024
+	maxInt32             int64 = 1<<31 - 1
 )
 
 type APIError struct {
@@ -34,6 +36,7 @@ func (e *APIError) Error() string { return e.Code + ": " + e.Message }
 
 type UploadStore interface {
 	CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error)
+	GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error)
 	CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error)
 	GetUploadSessionByID(ctx context.Context, id uuid.UUID) (store.UploadSession, error)
 	CreateFile(ctx context.Context, arg store.CreateFileParams) (store.File, error)
@@ -75,6 +78,7 @@ type CreateUploadOutput struct {
 
 type CompleteUploadInput struct {
 	UploadSessionID uuid.UUID
+	OwnerUserID     *uuid.UUID
 	Parts           []storage.CompletedPart
 }
 
@@ -95,7 +99,10 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 		}
 	}
 
-	partSize := s.partSize()
+	partSize, err := s.partSizeForFile(in.FileSize)
+	if err != nil {
+		return CreateUploadOutput{}, err
+	}
 	partCount := int(math.Ceil(float64(in.FileSize) / float64(partSize)))
 	if partCount > s.maxParts() {
 		return CreateUploadOutput{}, &APIError{Status: 400, Code: "file_too_large_for_single_session", Message: "パート数が上限を超えています"}
@@ -103,9 +110,13 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 
 	shipmentID := in.ShipmentID
 	if shipmentID == nil {
-		// 仮置き: shipment 作成API前の段階でも uploads 単体で進められるよう draft shipment を作成する。
+		ownerType := "anonymous"
+		if in.OwnerUserID != nil {
+			ownerType = "user"
+		}
+		// shipment 作成API前でも uploads 単体で進められるよう draft shipment を作成する。
 		shipment, err := s.Store.CreateShipment(ctx, store.CreateShipmentParams{
-			OwnerType:      "anonymous",
+			OwnerType:      ownerType,
 			OwnerUserID:    in.OwnerUserID,
 			OrganizationID: in.OrganizationID,
 			Status:         "uploading",
@@ -119,6 +130,8 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 			return CreateUploadOutput{}, fmt.Errorf("create shipment: %w", err)
 		}
 		shipmentID = &shipment.ID
+	} else if err := s.validateExistingShipment(ctx, *shipmentID, in.OwnerUserID, in.OrganizationID); err != nil {
+		return CreateUploadOutput{}, err
 	}
 
 	objectKey := buildObjectKey(*shipmentID, in.FileName)
@@ -174,8 +187,20 @@ func (s *UploadService) CompleteUploadSession(ctx context.Context, in CompleteUp
 		}
 		return CompleteUploadOutput{}, fmt.Errorf("get upload session: %w", err)
 	}
+	if !sameOptionalUUID(session.OwnerUserID, in.OwnerUserID) {
+		return CompleteUploadOutput{}, &APIError{Status: 403, Code: "upload_session_owner_conflict", Message: "この upload session を完了する権限がありません"}
+	}
 	if session.Status == "completed" {
-		return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_already_completed", Message: "既に完了済みです"}
+		// S3完了・DB更新後にレスポンスだけ失われた場合でも、同じcomplete要求を安全に再試行できるようにする。
+		if session.FileID == nil || session.ShipmentID == nil {
+			return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_completed_without_file", Message: "完了済みupload sessionのfile情報が不整合です"}
+		}
+		return CompleteUploadOutput{
+			UploadSessionID: session.ID,
+			FileID:          *session.FileID,
+			ShipmentID:      *session.ShipmentID,
+			Status:          "completed",
+		}, nil
 	}
 	if session.Status != "uploading" && session.Status != "initiated" {
 		return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_status_conflict", Message: "現在の status では完了できません"}
@@ -224,6 +249,33 @@ func (s *UploadService) validateCreateInput(in CreateUploadInput) error {
 	return nil
 }
 
+func (s *UploadService) validateExistingShipment(ctx context.Context, shipmentID uuid.UUID, ownerUserID, organizationID *uuid.UUID) error {
+	shipment, err := s.Store.GetShipment(ctx, shipmentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &APIError{Status: 404, Code: "shipment_not_found", Message: "shipment が見つかりません"}
+		}
+		return fmt.Errorf("get shipment for upload: %w", err)
+	}
+	if shipment.Status != "draft" && shipment.Status != "uploading" && shipment.Status != "ready" {
+		return &APIError{Status: 409, Code: "shipment_status_conflict", Message: "現在の shipment status ではファイルを追加できません"}
+	}
+	if !sameOptionalUUID(shipment.OwnerUserID, ownerUserID) {
+		return &APIError{Status: 403, Code: "shipment_owner_conflict", Message: "この shipment にファイルを追加する権限がありません"}
+	}
+	if !sameOptionalUUID(shipment.OrganizationID, organizationID) {
+		return &APIError{Status: 409, Code: "shipment_organization_conflict", Message: "organization_id が既存 shipment と一致しません"}
+	}
+	return nil
+}
+
+func sameOptionalUUID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 func buildObjectKey(shipmentID uuid.UUID, fileName string) string {
 	safeName := filepath.Base(fileName)
 	return fmt.Sprintf("uploads/%s/%s/%s", shipmentID.String(), uuid.NewString(), safeName)
@@ -236,6 +288,21 @@ func isContentTypeLike(v string) bool {
 	}
 	split := strings.Split(v, "/")
 	return len(split) == 2 && split[0] != "" && split[1] != ""
+}
+
+func (s *UploadService) partSizeForFile(fileSize int64) (int32, error) {
+	base := int64(s.partSize())
+	required := (fileSize + int64(s.maxParts()) - 1) / int64(s.maxParts())
+	if required <= base {
+		return int32(base), nil
+	}
+
+	// Presigned URL数を上限内に保ちつつ、扱いやすいMiB単位へ切り上げる。
+	rounded := ((required + oneMiB - 1) / oneMiB) * oneMiB
+	if rounded > maxInt32 {
+		return 0, &APIError{Status: 400, Code: "file_too_large_for_single_session", Message: "必要なパートサイズが上限を超えています"}
+	}
+	return int32(rounded), nil
 }
 
 func (s *UploadService) partSize() int32 {

@@ -28,8 +28,8 @@ export default function HomePage() {
               ファイル送信サービスです。送信後の通知とダウンロード状況も確認できます。
             </p>
             <div className="hero-actions">
-              <Link className="button" href="/auth">
-                無料で始める
+              <Link className="button" href="/send">
+                ファイルを送る
               </Link>
               <Link className="button button-secondary" href="/shipments">
                 送信履歴を見る

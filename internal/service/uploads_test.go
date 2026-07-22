@@ -16,20 +16,28 @@ type fakeStore struct {
 	shipment       store.Shipment
 	file           store.File
 	getErr         error
+	createShipment store.CreateShipmentParams
 	createSession  store.CreateUploadSessionParams
 	completeCalled bool
 }
 
 func (f *fakeStore) CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error) {
+	f.createShipment = arg
 	if f.shipment.ID == uuid.Nil {
 		f.shipment.ID = uuid.New()
+	}
+	return f.shipment, nil
+}
+func (f *fakeStore) GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error) {
+	if f.getErr != nil {
+		return store.Shipment{}, f.getErr
 	}
 	return f.shipment, nil
 }
 func (f *fakeStore) CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error) {
 	f.createSession = arg
 	if f.session.ID == uuid.Nil {
-		f.session = store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID, StorageBucket: arg.StorageBucket, StorageKey: arg.StorageKey, MultipartUploadID: arg.MultipartUploadID, Status: arg.Status, FileName: arg.FileName, ContentType: arg.ContentType, FileSizeBytes: arg.FileSizeBytes, ChecksumSha256: arg.ChecksumSha256}
+		f.session = store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID, StorageBucket: arg.StorageBucket, StorageKey: arg.StorageKey, MultipartUploadID: arg.MultipartUploadID, Status: arg.Status, FileName: arg.FileName, ContentType: arg.ContentType, FileSizeBytes: arg.FileSizeBytes, ChecksumSha256: arg.ChecksumSha256, OwnerUserID: arg.OwnerUserID}
 	}
 	return f.session, nil
 }
@@ -55,12 +63,14 @@ func (f *fakeStore) CreateFileAndMarkUploadCompleted(ctx context.Context, arg st
 
 type fakeObjectStore struct {
 	completeErr error
+	partCount   int
 }
 
 func (f *fakeObjectStore) CreateMultipartUpload(ctx context.Context, bucket, key, contentType string) (string, error) {
 	return "upload-id", nil
 }
 func (f *fakeObjectStore) BatchPresignUploadParts(ctx context.Context, bucket, key, uploadID string, partCount int, expiresIn time.Duration) ([]storage.PresignedPart, error) {
+	f.partCount = partCount
 	return []storage.PresignedPart{{PartNumber: 1, URL: "https://example.com/1"}}, nil
 }
 func (f *fakeObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []storage.CompletedPart) error {
@@ -69,12 +79,63 @@ func (f *fakeObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, k
 func (f *fakeObjectStore) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
 	return "https://example.com/download", nil
 }
+func (f *fakeObjectStore) DeleteObject(ctx context.Context, bucket, key string) error {
+	return nil
+}
 
 func TestCreateUploadSession_ValidationError(t *testing.T) {
 	svc := &UploadService{Store: &fakeStore{}, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
 	_, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{FileName: "", ContentType: "text/plain", FileSize: 1})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestCreateUploadSession_10GBUsesDynamicPartSize(t *testing.T) {
+	ownerID := uuid.New()
+	fs := &fakeStore{}
+	objectStore := &fakeObjectStore{}
+	svc := &UploadService{Store: fs, ObjectStore: objectStore, S3Bucket: "bucket"}
+
+	out, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{
+		OwnerUserID:    &ownerID,
+		FileName:       "large.bin",
+		ContentType:    "application/octet-stream",
+		FileSize:       defaultMaxFileSize,
+		ChecksumSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if objectStore.partCount > defaultMaxParts {
+		t.Fatalf("part count exceeded: %d", objectStore.partCount)
+	}
+	if out.PartSize <= defaultPartSizeBytes {
+		t.Fatalf("part size should grow for 10GB file: %d", out.PartSize)
+	}
+	if fs.createShipment.OwnerType != "user" {
+		t.Fatalf("owner type should be user: %s", fs.createShipment.OwnerType)
+	}
+}
+
+func TestCreateUploadSession_ExistingShipmentOwnerConflict(t *testing.T) {
+	shipmentID := uuid.New()
+	ownerID := uuid.New()
+	otherUserID := uuid.New()
+	fs := &fakeStore{shipment: store.Shipment{ID: shipmentID, OwnerUserID: &ownerID, Status: "uploading"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+
+	_, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{
+		ShipmentID:     &shipmentID,
+		OwnerUserID:    &otherUserID,
+		FileName:       "a.txt",
+		ContentType:    "text/plain",
+		FileSize:       10,
+		ChecksumSHA256: "abc",
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 || apiErr.Code != "shipment_owner_conflict" {
+		t.Fatalf("expected owner conflict got=%v", err)
 	}
 }
 
@@ -91,7 +152,45 @@ func TestCompleteUploadSession_Success(t *testing.T) {
 	}
 }
 
-func TestCompleteUploadSession_AlreadyCompleted(t *testing.T) {
+func TestCompleteUploadSession_OwnerConflict(t *testing.T) {
+	shipmentID := uuid.New()
+	ownerID := uuid.New()
+	otherUserID := uuid.New()
+	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, OwnerUserID: &ownerID, Status: "uploading"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+
+	_, err := svc.CompleteUploadSession(context.Background(), CompleteUploadInput{
+		UploadSessionID: fs.session.ID,
+		OwnerUserID:     &otherUserID,
+		Parts:           []storage.CompletedPart{{PartNumber: 1, ETag: "etag"}},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 || apiErr.Code != "upload_session_owner_conflict" {
+		t.Fatalf("expected owner conflict got=%v", err)
+	}
+	if fs.completeCalled {
+		t.Fatal("owner conflict must not complete upload")
+	}
+}
+
+func TestCompleteUploadSession_AlreadyCompletedReturnsExistingFile(t *testing.T) {
+	shipmentID := uuid.New()
+	fileID := uuid.New()
+	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, FileID: &fileID, Status: "completed"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+	out, err := svc.CompleteUploadSession(context.Background(), CompleteUploadInput{UploadSessionID: fs.session.ID, Parts: []storage.CompletedPart{{PartNumber: 1, ETag: "etag"}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.FileID != fileID || out.ShipmentID != shipmentID || out.Status != "completed" {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+	if fs.completeCalled {
+		t.Fatal("completed session must not create another file")
+	}
+}
+
+func TestCompleteUploadSession_CompletedWithoutFileReturnsConflict(t *testing.T) {
 	shipmentID := uuid.New()
 	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, Status: "completed"}}
 	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}

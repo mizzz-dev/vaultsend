@@ -30,7 +30,7 @@ export function AuthPanel() {
           display_name: displayName.trim() || undefined,
         });
       }
-      router.push("/shipments");
+      router.push(readSafeNextPath());
       router.refresh();
     } catch (caught) {
       if (caught instanceof ApiClientError) {
@@ -140,4 +140,12 @@ export function AuthPanel() {
       </form>
     </section>
   );
+}
+
+function readSafeNextPath() {
+  const raw = new URLSearchParams(window.location.search).get("next");
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
+    return "/shipments";
+  }
+  return raw;
 }

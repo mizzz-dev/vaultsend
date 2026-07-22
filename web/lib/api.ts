@@ -1,6 +1,9 @@
 import type {
   ApiErrorPayload,
   AuthResponse,
+  CompleteUploadResponse,
+  CreateShipmentResponse,
+  CreateUploadResponse,
   ShipmentDetail,
   ShipmentListResponse,
 } from "@/lib/types";
@@ -68,6 +71,46 @@ export const api = {
   },
   me() {
     return request<AuthResponse>("/auth/me");
+  },
+  createUpload(input: {
+    shipment_id?: string;
+    file_name: string;
+    file_size: number;
+    content_type: string;
+    checksum_sha256: string;
+  }) {
+    return request<CreateUploadResponse>("/uploads", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+  completeUpload(
+    uploadSessionId: string,
+    parts: Array<{ part_number: number; etag: string }>,
+  ) {
+    return request<CompleteUploadResponse>(
+      `/uploads/${encodeURIComponent(uploadSessionId)}/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify({ parts }),
+      },
+    );
+  },
+  createShipment(input: {
+    shipment_id: string;
+    file_ids: string[];
+    subject: string;
+    message?: string;
+    share_mode: "url_shared" | "recipient_restricted";
+    recipients: Array<{ email: string }>;
+    expires_at: string;
+    max_download_count: number;
+    password?: string;
+  }) {
+    return request<CreateShipmentResponse>("/shipments", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   },
   listShipments(limit = 10, offset = 0) {
     const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
