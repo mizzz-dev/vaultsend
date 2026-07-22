@@ -88,7 +88,16 @@ func (h UploadHandler) CompleteUpload(w http.ResponseWriter, r *http.Request) {
 		parts = append(parts, storage.CompletedPart{PartNumber: p.PartNumber, ETag: p.ETag})
 	}
 
-	out, err := h.Service.CompleteUploadSession(r.Context(), service.CompleteUploadInput{UploadSessionID: uploadID, Parts: parts})
+	var ownerUserID *uuid.UUID
+	if user, ok := middleware.AuthUserFromContext(r.Context()); ok {
+		ownerUserID = &user.ID
+	}
+
+	out, err := h.Service.CompleteUploadSession(r.Context(), service.CompleteUploadInput{
+		UploadSessionID: uploadID,
+		OwnerUserID:     ownerUserID,
+		Parts:           parts,
+	})
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
