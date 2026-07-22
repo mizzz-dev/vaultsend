@@ -19,18 +19,25 @@ import (
 
 type handlerStore struct {
 	lastOwnerUserID *uuid.UUID
+	session         *store.UploadSession
 }
 
 func (h *handlerStore) CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error) {
 	return store.Shipment{ID: uuid.New()}, nil
+}
+func (h *handlerStore) GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error) {
+	return store.Shipment{ID: id, Status: "uploading"}, nil
 }
 func (h *handlerStore) CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error) {
 	h.lastOwnerUserID = arg.OwnerUserID
 	return store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID}, nil
 }
 func (h *handlerStore) GetUploadSessionByID(ctx context.Context, id uuid.UUID) (store.UploadSession, error) {
+	if h.session != nil {
+		return *h.session, nil
+	}
 	shipmentID := uuid.New()
-	return store.UploadSession{ID: id, ShipmentID: &shipmentID, StorageBucket: "b", StorageKey: "k", MultipartUploadID: "u", Status: "completed"}, nil
+	return store.UploadSession{ID: id, ShipmentID: &shipmentID, Status: "completed"}, nil
 }
 func (h *handlerStore) CreateFile(ctx context.Context, arg store.CreateFileParams) (store.File, error) {
 	return store.File{}, nil
@@ -53,6 +60,12 @@ func (o *handlerObj) BatchPresignUploadParts(ctx context.Context, bucket, key, u
 func (o *handlerObj) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []storage.CompletedPart) error {
 	return nil
 }
+func (o *handlerObj) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
+	return "https://example.com/download", nil
+}
+func (o *handlerObj) DeleteObject(ctx context.Context, bucket, key string) error {
+	return nil
+}
 
 func TestCreateUpload_BadRequest(t *testing.T) {
 	svc := &service.UploadService{Store: &handlerStore{}, ObjectStore: &handlerObj{}, S3Bucket: "bucket"}
@@ -66,7 +79,7 @@ func TestCreateUpload_BadRequest(t *testing.T) {
 	}
 }
 
-func TestCompleteUpload_AlreadyCompleted(t *testing.T) {
+func TestCompleteUpload_AlreadyCompletedWithoutFile(t *testing.T) {
 	svc := &service.UploadService{Store: &handlerStore{}, ObjectStore: &handlerObj{}, S3Bucket: "bucket"}
 	h := UploadHandler{Service: svc}
 	r := chi.NewRouter()
@@ -96,5 +109,37 @@ func TestCreateUpload_WithAuthOwnerUserID(t *testing.T) {
 	}
 	if store.lastOwnerUserID == nil || *store.lastOwnerUserID != userID {
 		t.Fatal("owner_user_id should be propagated")
+	}
+}
+
+func TestCompleteUpload_WithAuthOwnerUserID(t *testing.T) {
+	userID := uuid.New()
+	shipmentID := uuid.New()
+	uploadSessionID := uuid.New()
+	store := &handlerStore{session: &store.UploadSession{
+		ID:                uploadSessionID,
+		ShipmentID:        &shipmentID,
+		OwnerUserID:       &userID,
+		StorageBucket:     "b",
+		StorageKey:        "k",
+		MultipartUploadID: "u",
+		Status:            "uploading",
+		FileName:          "a.txt",
+		ContentType:       "text/plain",
+		FileSizeBytes:     10,
+		ChecksumSha256:    "abc",
+	}}
+	svc := &service.UploadService{Store: store, ObjectStore: &handlerObj{}, S3Bucket: "bucket"}
+	h := UploadHandler{Service: svc}
+	r := chi.NewRouter()
+	r.Post("/v1/uploads/{id}/complete", h.CompleteUpload)
+
+	payload, _ := json.Marshal(map[string]any{"parts": []map[string]any{{"part_number": 1, "etag": "etag"}}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/uploads/"+uploadSessionID.String()+"/complete", bytes.NewReader(payload))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: userID, Email: "a@example.com"}))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
