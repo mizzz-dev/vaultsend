@@ -16,7 +16,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const defaultDownloadURLTTL = 60 * time.Second
+const (
+	defaultDownloadURLTTL = 60 * time.Second
+	defaultAccessGrantTTL = 10 * time.Minute
+)
 
 type AccessStore interface {
 	GetAccessTokenByHash(ctx context.Context, tokenHash string) (store.AccessToken, error)
@@ -30,10 +33,12 @@ type AccessStore interface {
 }
 
 type AccessService struct {
-	Store          AccessStore
-	ObjectStore    storage.ObjectStore
-	DownloadURLTTL time.Duration
-	Guard          *AccessGuard
+	Store             AccessStore
+	ObjectStore       storage.ObjectStore
+	DownloadURLTTL    time.Duration
+	AccessGrantTTL    time.Duration
+	AccessGrantSecret string
+	Guard             *AccessGuard
 }
 
 type AccessInspectOutput struct {
@@ -56,11 +61,18 @@ type VerifyAccessInput struct {
 	Password *string
 }
 
+type VerifyAccessOutput struct {
+	Granted   bool      `json:"granted"`
+	Grant     string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
 type DownloadURLInput struct {
-	Token     string
-	FileID    uuid.UUID
-	IPAddress string
-	UserAgent string
+	Token       string
+	AccessGrant string
+	FileID      uuid.UUID
+	IPAddress   string
+	UserAgent   string
 }
 
 type DownloadURLOutput struct {
@@ -95,44 +107,56 @@ func (s *AccessService) InspectAccess(ctx context.Context, rawToken string) (Acc
 	return out, nil
 }
 
-func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) error {
+func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) (VerifyAccessOutput, error) {
 	if s.guard().VerifyAllowed(in.Token) == false {
 		log.Printf("event=verify_locked token_hash=%s", hashToken(in.Token))
-		return &APIError{Status: 429, Code: "verify_locked", Message: "パスワード再試行が上限を超えました。時間をおいて再試行してください"}
+		return VerifyAccessOutput{}, &APIError{Status: 429, Code: "verify_locked", Message: "パスワード再試行が上限を超えました。時間をおいて再試行してください"}
 	}
 
 	state, err := s.resolveAccessState(ctx, in.Token)
 	if err != nil {
-		return err
+		return VerifyAccessOutput{}, err
 	}
 	if state.shipment.PasswordHash == nil {
-		return nil
+		return VerifyAccessOutput{Granted: true}, nil
 	}
 	if in.Password == nil || strings.TrimSpace(*in.Password) == "" {
 		s.guard().RegisterVerifyFailure(in.Token)
 		log.Printf("event=verify_failure token_hash=%s reason=password_required", hashToken(in.Token))
-		return &APIError{Status: 400, Code: "password_required", Message: "password が必要です"}
+		return VerifyAccessOutput{}, &APIError{Status: 400, Code: "password_required", Message: "password が必要です"}
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*state.shipment.PasswordHash), []byte(*in.Password)); err != nil {
 		s.guard().RegisterVerifyFailure(in.Token)
 		log.Printf("event=verify_failure token_hash=%s reason=invalid_password", hashToken(in.Token))
-		return &APIError{Status: 401, Code: "invalid_password", Message: "password が一致しません"}
+		return VerifyAccessOutput{}, &APIError{Status: 401, Code: "invalid_password", Message: "password が一致しません"}
 	}
+
 	s.guard().ResetVerify(in.Token)
-	return nil
+	expiresAt := s.accessGrantExpiresAt(state)
+	grant, err := issueAccessGrant(s.AccessGrantSecret, in.Token, expiresAt)
+	if err != nil {
+		return VerifyAccessOutput{}, fmt.Errorf("issue access grant: %w", err)
+	}
+	return VerifyAccessOutput{Granted: true, Grant: grant, ExpiresAt: expiresAt}, nil
 }
 
 func (s *AccessService) GenerateDownloadURL(ctx context.Context, in DownloadURLInput) (DownloadURLOutput, error) {
+	state, err := s.resolveAccessState(ctx, in.Token)
+	if err != nil {
+		return DownloadURLOutput{}, err
+	}
+	if state.shipment.PasswordHash != nil {
+		if err := validateAccessGrant(s.AccessGrantSecret, in.Token, in.AccessGrant, time.Now().UTC()); err != nil {
+			return DownloadURLOutput{}, &APIError{Status: 401, Code: "access_verification_required", Message: "パスワードの再確認が必要です"}
+		}
+	}
+
 	downloadKey := hashToken(in.Token) + ":" + hashIP(in.IPAddress)
 	if !s.guard().AllowDownload(downloadKey) {
 		log.Printf("event=download_abuse_block token_hash=%s ip_hash=%s", hashToken(in.Token), hashIP(in.IPAddress))
 		return DownloadURLOutput{}, &APIError{Status: 429, Code: "download_rate_limited", Message: "短時間でのダウンロードURL発行回数が多すぎます"}
 	}
 
-	state, err := s.resolveAccessState(ctx, in.Token)
-	if err != nil {
-		return DownloadURLOutput{}, err
-	}
 	file, err := s.Store.GetFileByID(ctx, in.FileID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -260,11 +284,29 @@ func optionalString(v string) *string {
 	return &trimmed
 }
 
+func (s *AccessService) accessGrantExpiresAt(state accessState) time.Time {
+	expiresAt := time.Now().UTC().Add(s.accessGrantTTL())
+	if state.token.ExpiresAt.Before(expiresAt) {
+		expiresAt = state.token.ExpiresAt
+	}
+	if state.shipment.ExpiresAt.Before(expiresAt) {
+		expiresAt = state.shipment.ExpiresAt
+	}
+	return expiresAt
+}
+
 func (s *AccessService) downloadURLTTL() time.Duration {
 	if s.DownloadURLTTL <= 0 {
 		return defaultDownloadURLTTL
 	}
 	return s.DownloadURLTTL
+}
+
+func (s *AccessService) accessGrantTTL() time.Duration {
+	if s.AccessGrantTTL <= 0 {
+		return defaultAccessGrantTTL
+	}
+	return s.AccessGrantTTL
 }
 
 func (s *AccessService) guard() *AccessGuard {
