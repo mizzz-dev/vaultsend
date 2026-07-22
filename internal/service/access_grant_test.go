@@ -10,7 +10,11 @@ func TestAccessGrant_RejectsTamperedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("issue grant: %v", err)
 	}
-	tampered := grant[:len(grant)-1] + "A"
+	replacement := "A"
+	if grant[len(grant)-1:] == replacement {
+		replacement = "B"
+	}
+	tampered := grant[:len(grant)-1] + replacement
 	if err := validateAccessGrant(testAccessGrantSecret, "raw-token", tampered, time.Now().UTC()); err == nil {
 		t.Fatal("tampered grant must be rejected")
 	}
