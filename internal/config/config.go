@@ -213,14 +213,8 @@ func Load() (Config, error) {
 	if cfg.StripePriceIDPro == "" {
 		missing = append(missing, "STRIPE_PRICE_ID_PRO")
 	}
-	if cfg.AccessGrantSecret == "" {
-		missing = append(missing, "ACCESS_GRANT_SECRET")
-	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required envs: %v", missing)
-	}
-	if len(cfg.AccessGrantSecret) < 32 {
-		return Config{}, fmt.Errorf("ACCESS_GRANT_SECRET must be at least 32 bytes")
 	}
 	return cfg, nil
 }
