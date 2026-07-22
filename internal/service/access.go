@@ -43,6 +43,7 @@ type AccessService struct {
 
 type AccessInspectOutput struct {
 	RequiresPassword bool                     `json:"requires_password"`
+	Verified         bool                     `json:"verified"`
 	Shipment         AccessShipmentView       `json:"shipment"`
 	Files            []CreateShipmentFileView `json:"files"`
 }
@@ -62,9 +63,9 @@ type VerifyAccessInput struct {
 }
 
 type VerifyAccessOutput struct {
-	Granted   bool      `json:"granted"`
-	Grant     string    `json:"-"`
-	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Granted   bool       `json:"granted"`
+	Grant     string     `json:"-"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type DownloadURLInput struct {
@@ -81,6 +82,10 @@ type DownloadURLOutput struct {
 }
 
 func (s *AccessService) InspectAccess(ctx context.Context, rawToken string) (AccessInspectOutput, error) {
+	return s.InspectAccessWithGrant(ctx, rawToken, "")
+}
+
+func (s *AccessService) InspectAccessWithGrant(ctx context.Context, rawToken, accessGrant string) (AccessInspectOutput, error) {
 	state, err := s.resolveAccessState(ctx, rawToken)
 	if err != nil {
 		return AccessInspectOutput{}, err
@@ -89,8 +94,15 @@ func (s *AccessService) InspectAccess(ctx context.Context, rawToken string) (Acc
 		return AccessInspectOutput{}, &APIError{Status: 409, Code: "download_limit_exceeded", Message: "ダウンロード回数制限を超過しています"}
 	}
 
+	requiresPassword := state.shipment.PasswordHash != nil
+	verified := !requiresPassword
+	if requiresPassword && accessGrant != "" {
+		verified = validateAccessGrant(s.AccessGrantSecret, rawToken, accessGrant, time.Now().UTC()) == nil
+	}
+
 	out := AccessInspectOutput{
-		RequiresPassword: state.shipment.PasswordHash != nil,
+		RequiresPassword: requiresPassword,
+		Verified:         verified,
 		Shipment: AccessShipmentView{
 			ID:               state.shipment.ID,
 			ShareMode:        normalizeShareModeForResponse(state.shipment.ShareMode),
@@ -108,7 +120,7 @@ func (s *AccessService) InspectAccess(ctx context.Context, rawToken string) (Acc
 }
 
 func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) (VerifyAccessOutput, error) {
-	if s.guard().VerifyAllowed(in.Token) == false {
+	if !s.guard().VerifyAllowed(in.Token) {
 		log.Printf("event=verify_locked token_hash=%s", hashToken(in.Token))
 		return VerifyAccessOutput{}, &APIError{Status: 429, Code: "verify_locked", Message: "パスワード再試行が上限を超えました。時間をおいて再試行してください"}
 	}
@@ -137,7 +149,7 @@ func (s *AccessService) VerifyAccess(ctx context.Context, in VerifyAccessInput) 
 	if err != nil {
 		return VerifyAccessOutput{}, fmt.Errorf("issue access grant: %w", err)
 	}
-	return VerifyAccessOutput{Granted: true, Grant: grant, ExpiresAt: expiresAt}, nil
+	return VerifyAccessOutput{Granted: true, Grant: grant, ExpiresAt: &expiresAt}, nil
 }
 
 func (s *AccessService) GenerateDownloadURL(ctx context.Context, in DownloadURLInput) (DownloadURLOutput, error) {
