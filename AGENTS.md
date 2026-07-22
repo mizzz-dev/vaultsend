@@ -6,8 +6,8 @@
 
 ## 1. このプロジェクトの概要
 
-- vaultsend は、Secure Send（期限付き・回数制限付きファイル共有）の MVP バックエンドです。
-- 現在の主実装は Go API / Worker / Cleanup Worker と DB スキーマ・クエリ群で、メール通知（SES）・キュー（SQS）・オブジェクトストレージ（S3）・課金（Stripe）・組織/RBAC を含みます。
+- vaultsend は、Secure Send（期限付き・回数制限付きファイル共有）の MVP です。
+- 現在の主実装は Next.js Web、Go API / Worker / Cleanup Worker と DB スキーマ・クエリ群で、メール通知（SES）・キュー（SQS）・オブジェクトストレージ（S3）・課金（Stripe）・組織/RBAC を含みます。
 - 主要ドメイン概念:
   - `shipments`（送信単位）
   - `files`, `upload_sessions`（アップロード管理）
@@ -16,14 +16,18 @@
   - `users`, `sessions`（認証）
   - `organizations`, `organization_members`（組織・権限）
   - `subscriptions`（ユーザー/組織課金）
-- API 本線は `cmd/api`、非同期通知は `cmd/worker`、データライフサイクル管理は `cmd/cleanup-worker` が担当します。
+- Web UI は `web`、API 本線は `cmd/api`、非同期通知は `cmd/worker`、データライフサイクル管理は `cmd/cleanup-worker` が担当します。
 - 設計の一次ソース:
   1. `docs/secure-send-mvp-design-ja.md`
-  2. `README.md`
-  3. 実装コード（`internal/`, `db/`）
+  2. `README.md` / `web/README.md`
+  3. 実装コード（`web/`, `internal/`, `db/`）
 
 ## 2. 技術スタックと主要ディレクトリ
 
+- フロントエンド: Next.js App Router + TypeScript strict (`web`)
+  - 画面: `web/app`
+  - UIコンポーネント: `web/components`
+  - API・アップロード処理: `web/lib`
 - バックエンド: Go
   - HTTP: chi (`internal/http`)
   - サービス層: `internal/service`
@@ -36,6 +40,7 @@
   - 通知送信: `internal/worker/mail_worker.go`
   - 期限切れ・削除: `internal/worker/cleanup_worker.go`
 - エントリポイント:
+  - Web: `web/app`
   - API: `cmd/api/main.go`
   - Worker: `cmd/worker/main.go`
   - Cleanup Worker: `cmd/cleanup-worker/main.go`
@@ -46,20 +51,19 @@
   - 環境変数ロード: `internal/config/config.go`
   - 開発コマンド: `Makefile`
 
-> 補足: 設計書では Next.js を想定していますが、現時点で本リポジトリにフロントエンド実装本体は同梱されていません。
-
 ## 3. 作業前に確認すべきこと
 
-1. `README.md` と `docs/secure-send-mvp-design-ja.md` を読み、変更対象の仕様を再確認する。
-2. 変更箇所の既存責務を確認する（handler / service / store / middleware / worker）。
-3. 既存の同等機能を検索し、重複実装を避ける（特に `internal/service` と `internal/store`）。
-4. 変更対象の周辺テスト（service, handler, middleware, worker）を先に把握する。
+1. `README.md`、`web/README.md`、`docs/secure-send-mvp-design-ja.md` を読み、変更対象の仕様を再確認する。
+2. 変更箇所の既存責務を確認する（frontend / handler / service / store / middleware / worker）。
+3. 既存の同等機能を検索し、重複実装を避ける（特に `web/lib`、`internal/service`、`internal/store`）。
+4. 変更対象の周辺テスト（frontend, service, handler, middleware, worker）を先に把握する。
 5. 仕様が曖昧な場合は設計書（`docs/secure-send-mvp-design-ja.md`）優先で判断し、必要なら README/Docs を同時更新する。
 
 ## 4. 実装ルール（プロジェクト固有）
 
 - **差分最小**: 今回の目的に必要な差分だけを入れる。無関係な rename・format-only 変更は禁止。
 - **責務分離**:
+  - frontend: 表示・入力・進捗・API呼び出し。認可やプラン制限の最終判定は行わない。
   - handler: 入出力（JSON decode/validate, HTTP status 変換）のみに留める。
   - service: ドメインロジック・権限判定・業務バリデーション。
   - store: DB クエリ/トランザクション境界。
@@ -74,7 +78,7 @@
   - 既存データへ破壊的変更を入れる場合はロールバック手順を明示する。
 - **config/env 追加時**:
   - `internal/config/config.go` の Load とバリデーションを更新。
-  - `README.md` の環境変数一覧・起動手順を更新。
+  - `README.md` / `web/README.md` の環境変数一覧・起動手順を更新。
 - **worker と API の分離**:
   - メール送信・大量削除など遅延許容処理は API 内同期実行しない。
   - API は enqueue まで、実処理は worker で実施。
@@ -91,7 +95,7 @@
   - 組織コンテキストがある場合は org subscription を優先。
   - ない場合は user subscription を参照。
 - **副作用処理**:
-  - notification_events / cleanup は監査性が重要。状態遷移と再試行可能性（冪等性）を意識して更新する。
+  - notification_events / cleanup / multipart complete は再試行・重複実行を前提に冪等性を意識する。
 
 ## 5. Go 実装規約
 
@@ -105,7 +109,7 @@
 - interface は「利用側（service/worker）」で最小定義する（現状の `ShipmentStore`, `BillingStore` 方式を踏襲）。
 - テスト方針:
   - 変更した層のテストを優先（service / handler / middleware / worker）。
-  - 正常系だけでなく認可・制限超過・競合系を追加。
+  - 正常系だけでなく認可・制限超過・競合・再試行系を追加。
 - モック方針:
   - 既存テスト同様、最小スタブをテストファイル内に定義し過剰抽象化しない。
 - 基本運用コマンド:
@@ -115,14 +119,21 @@
 - 依存取得制約がある環境で失敗した場合:
   - 失敗コマンド、失敗理由（ネットワーク・権限等）、代替で実施した確認範囲を PR の Testing に明記する。
 
-## 6. フロントエンド規約（該当ディレクトリ追加時）
-
-> 現時点ではフロントエンド実装は本リポジトリ外/未同梱。`frontend` や `web` が追加された場合に適用。
+## 6. フロントエンド規約
 
 - TypeScript strict を前提に、API 契約（request/response, error code）に追従する。
 - 制限判定（plan, auth, org role, download 可否）は UI だけで完結させず、必ずサーバ判定結果を最終ソースにする。
 - billing/auth/org/shipment の状態は API レスポンスを正として扱い、クライアント側で独自ルールを増やしすぎない。
-- トークンや webhook secret 等の秘密情報をブラウザへ露出しない。
+- トークンや webhook secret、AWS資格情報等の秘密情報をブラウザへ露出しない。
+- S3へのファイル本体送信はPresigned URLを利用し、APIサーバーへ大容量バイナリを中継しない。
+- multipart uploadでは完了済みパートを保持し、同一セッションの再試行で不要な再送を避ける。
+- ブラウザでファイル全体を一括 `ArrayBuffer` 化せず、チャンク単位で処理する。
+- S3 CORSは本番Originへ限定し、multipart completeに必要な `ETag` のみを公開する。
+- Web変更時の基本運用コマンド:
+  - `make web-lint`
+  - `make web-typecheck`
+  - `make web-build`
+- 主要導線はデスクトップと320px幅で確認し、キーボード操作・ラベル・エラー通知を省略しない。
 
 ## 7. DB / migration / query のルール
 
@@ -140,6 +151,7 @@
 - 認証必須/任意をルート単位で再確認し、`RequireAuth` 適用漏れを防ぐ。
 - エラー形式は `code/message/request_id` を維持し、plan 制限時は既存の `plan_limit_exceeded` 系形式に合わせる。
 - 監査/通知に関わる変更（notification_events, download_events, webhook）は副作用の増減をレビューで明記する。
+- create/complete/finalize等の副作用APIは、通信再試行時の重複実行を考慮する。
 
 ## 9. worker / 非同期処理のルール
 
@@ -157,6 +169,7 @@
 - パスワード平文保存・ログ出力は禁止。
 - token 生値保存禁止（`sha256` 等でハッシュ化して保存）。
 - Presigned URL の TTL は短命維持（upload: 15分, download: 60秒の既定を尊重）。
+- Presigned URL、S3 ETag、ファイルチェックサムを不要にログ出力しない。
 - verify/download のレート制限を緩める変更は、根拠と abuse 対策を必ず添える。
 - 削除処理は `deleted` 論理状態と cleanup worker の物理削除の二段階を維持。
 - Stripe webhook は署名検証を必須にし、失敗時は `invalid_webhook` を返す現行方針を維持。
@@ -166,20 +179,27 @@
   - access/manage token 生値
   - セッション token
   - webhook secret
+  - Presigned URL
 
 ## 11. テストと検証
 
-- 変更時の最低限:
+- Go変更時の最低限:
   1. 変更パッケージの `go test`
   2. 可能なら `go test ./...`
   3. 必要に応じて `go vet ./...`
+- Web変更時の最低限:
+  1. `make web-lint`
+  2. `make web-typecheck`
+  3. `make web-build`
+  4. 主要フローのブラウザ確認
 - テスト観点:
+  - frontend: 入力、進捗、再試行、レスポンシブ、アクセシビリティ
   - unit test: 入力バリデーション、状態遷移、制限値
   - handler test: HTTP status, error format, auth requirement
-  - service test: 認可・課金制限・owner/org 判定
+  - service test: 認可・課金制限・owner/org 判定・冪等性
   - worker test: retry, poison message, event status 更新
 - README にある手動確認手順へ影響する変更は README を更新する。
-- `go test ./...` が環境依存で失敗した場合は、PR の Testing に失敗理由と未確認範囲を必ず記載する。
+- テストが環境依存で失敗した場合は、PR の Testing に失敗理由と未確認範囲を必ず記載する。
 
 ## 12. ドキュメント更新ルール
 
