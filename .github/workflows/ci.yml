@@ -76,6 +76,16 @@ jobs:
           set -o pipefail
           go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker 2>&1 | tee .ci-logs/go/build.log
 
+      - name: 修正対象ソースを診断用に保存
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p .ci-logs/go/source/internal/service .ci-logs/go/source/internal/http/render
+          cp internal/service/uploads.go .ci-logs/go/source/internal/service/uploads.go
+          cp internal/service/billing.go .ci-logs/go/source/internal/service/billing.go
+          cp internal/service/billing_test.go .ci-logs/go/source/internal/service/billing_test.go
+          cp internal/http/render/render.go .ci-logs/go/source/internal/http/render/render.go
+
       - name: Go失敗ログを保存
         if: failure()
         uses: actions/upload-artifact@v7
