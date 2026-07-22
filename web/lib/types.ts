@@ -127,6 +127,7 @@ export type AccessFile = {
 
 export type AccessInspectResponse = {
   requires_password: boolean;
+  verified: boolean;
   shipment: {
     id: string;
     share_mode: "url_shared" | "recipient_restricted" | string;
