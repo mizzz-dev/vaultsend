@@ -23,11 +23,13 @@ type Config struct {
 	StripeSecretKey     string
 	StripeWebhookSecret string
 	StripePriceIDPro    string
+	AccessGrantSecret   string
 
 	// HTTPRequestTimeout はtimeout middlewareの既定値。
 	HTTPRequestTimeout time.Duration
 	UploadURLTTL       time.Duration
 	PresignedURLTTL    time.Duration
+	AccessGrantTTL     time.Duration
 	UploadPartSize     int32
 	UploadMaxFileSize  int64
 	UploadMaxParts     int
@@ -59,9 +61,11 @@ func Load() (Config, error) {
 		StripeSecretKey:     os.Getenv("STRIPE_SECRET_KEY"),
 		StripeWebhookSecret: os.Getenv("STRIPE_WEBHOOK_SECRET"),
 		StripePriceIDPro:    os.Getenv("STRIPE_PRICE_ID_PRO"),
+		AccessGrantSecret:   strings.TrimSpace(os.Getenv("ACCESS_GRANT_SECRET")),
 		HTTPRequestTimeout:  30 * time.Second,
 		UploadURLTTL:        15 * time.Minute,
 		PresignedURLTTL:     60 * time.Second,
+		AccessGrantTTL:      10 * time.Minute,
 		UploadPartSize:      8 * 1024 * 1024,
 		UploadMaxFileSize:   10 * 1024 * 1024 * 1024,
 		UploadMaxParts:      1000,
@@ -79,6 +83,9 @@ func Load() (Config, error) {
 
 	if cfg.AppEnv == "local" || cfg.AppEnv == "test" {
 		cfg.CookieSecure = false
+		if cfg.AccessGrantSecret == "" {
+			cfg.AccessGrantSecret = "local-development-access-grant-secret-change-me"
+		}
 	}
 	if v := os.Getenv("COOKIE_SECURE"); v != "" {
 		parsed, err := strconv.ParseBool(v)
@@ -127,6 +134,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid PRESIGNED_URL_TTL: %q", v)
 		}
 		cfg.PresignedURLTTL = time.Duration(sec) * time.Second
+	}
+	if v := os.Getenv("ACCESS_GRANT_TTL_SEC"); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil || sec <= 0 {
+			return Config{}, fmt.Errorf("invalid ACCESS_GRANT_TTL_SEC: %q", v)
+		}
+		cfg.AccessGrantTTL = time.Duration(sec) * time.Second
 	}
 	if v := os.Getenv("RATE_LIMIT_RPS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -199,8 +213,14 @@ func Load() (Config, error) {
 	if cfg.StripePriceIDPro == "" {
 		missing = append(missing, "STRIPE_PRICE_ID_PRO")
 	}
+	if cfg.AccessGrantSecret == "" {
+		missing = append(missing, "ACCESS_GRANT_SECRET")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required envs: %v", missing)
+	}
+	if len(cfg.AccessGrantSecret) < 32 {
+		return Config{}, fmt.Errorf("ACCESS_GRANT_SECRET must be at least 32 bytes")
 	}
 	return cfg, nil
 }
