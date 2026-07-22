@@ -74,10 +74,12 @@ func main() {
 	}
 
 	accessSvc := &service.AccessService{
-		Store:          queries,
-		ObjectStore:    s3Store,
-		DownloadURLTTL: cfg.PresignedURLTTL,
-		Guard:          guard,
+		Store:             queries,
+		ObjectStore:       s3Store,
+		DownloadURLTTL:    cfg.PresignedURLTTL,
+		AccessGrantTTL:    cfg.AccessGrantTTL,
+		AccessGrantSecret: cfg.AccessGrantSecret,
+		Guard:             guard,
 	}
 
 	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc, billingSvc, orgSvc)
