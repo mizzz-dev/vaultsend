@@ -29,7 +29,12 @@ func NewServer(cfg config.Config, queries *store.Queries, uploadSvc *service.Upl
 
 	uploadHandler := handler.UploadHandler{Service: uploadSvc}
 	shipmentHandler := handler.ShipmentHandler{Service: shipmentSvc}
-	accessHandler := handler.AccessHandler{Service: accessSvc}
+	accessHandler := handler.AccessHandler{
+		Service:        accessSvc,
+		CookieDomain:   cfg.CookieDomain,
+		CookieSecure:   cfg.CookieSecure,
+		CookieSameSite: cfg.CookieSameSite,
+	}
 	authHandler := handler.AuthHandler{Service: authSvc, CookieDomain: cfg.CookieDomain, CookieSecure: cfg.CookieSecure, CookieSameSite: cfg.CookieSameSite}
 	billingHandler := handler.BillingHandler{Service: billingSvc}
 	orgHandler := handler.OrgHandler{Service: orgSvc}
