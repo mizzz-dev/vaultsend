@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/example/vaultsend/internal/http/render"
 	"github.com/example/vaultsend/internal/service"
@@ -12,13 +15,18 @@ import (
 	"github.com/google/uuid"
 )
 
+const accessGrantCookiePrefix = "vaultsend_access_grant_"
+
 type AccessHandler struct {
-	Service *service.AccessService
+	Service        *service.AccessService
+	CookieDomain   string
+	CookieSecure   bool
+	CookieSameSite http.SameSite
 }
 
 func (h AccessHandler) InspectAccess(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	if len(token) > 256 || strings.TrimSpace(token) == "" {
+	if !validAccessToken(token) {
 		render.Error(w, http.StatusBadRequest, "invalid_token", "token が不正です", chimw.GetReqID(r.Context()))
 		return
 	}
@@ -32,6 +40,10 @@ func (h AccessHandler) InspectAccess(w http.ResponseWriter, r *http.Request) {
 
 func (h AccessHandler) VerifyAccess(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
+	if !validAccessToken(token) {
+		render.Error(w, http.StatusBadRequest, "invalid_token", "token が不正です", chimw.GetReqID(r.Context()))
+		return
+	}
 	var req struct {
 		Password *string `json:"password"`
 	}
@@ -43,11 +55,15 @@ func (h AccessHandler) VerifyAccess(w http.ResponseWriter, r *http.Request) {
 		render.Error(w, http.StatusBadRequest, "invalid_password", "password が長すぎます", chimw.GetReqID(r.Context()))
 		return
 	}
-	if err := h.Service.VerifyAccess(r.Context(), service.VerifyAccessInput{Token: token, Password: req.Password}); err != nil {
+	out, err := h.Service.VerifyAccess(r.Context(), service.VerifyAccessInput{Token: token, Password: req.Password})
+	if err != nil {
 		writeServiceError(w, r, err)
 		return
 	}
-	render.JSON(w, http.StatusOK, map[string]any{"granted": true})
+	if out.Grant != "" {
+		h.setAccessGrantCookie(w, token, out.Grant, out.ExpiresAt)
+	}
+	render.JSON(w, http.StatusOK, out)
 }
 
 func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Request) {
@@ -57,15 +73,21 @@ func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	token := r.URL.Query().Get("access_token")
-	if len(token) > 256 || strings.TrimSpace(token) == "" {
+	if !validAccessToken(token) {
 		render.Error(w, http.StatusBadRequest, "invalid_token", "access_token が不正です", chimw.GetReqID(r.Context()))
 		return
 	}
+	grantCookie, _ := r.Cookie(accessGrantCookieName(token))
+	grant := ""
+	if grantCookie != nil {
+		grant = grantCookie.Value
+	}
 	out, err := h.Service.GenerateDownloadURL(r.Context(), service.DownloadURLInput{
-		Token:     token,
-		FileID:    fileID,
-		IPAddress: clientIP(r),
-		UserAgent: r.UserAgent(),
+		Token:       token,
+		AccessGrant: grant,
+		FileID:      fileID,
+		IPAddress:   clientIP(r),
+		UserAgent:   r.UserAgent(),
 	})
 	if err != nil {
 		writeServiceError(w, r, err)
@@ -74,9 +96,39 @@ func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Reques
 	render.JSON(w, http.StatusOK, out)
 }
 
+func (h AccessHandler) setAccessGrantCookie(w http.ResponseWriter, token, grant string, expiresAt time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     accessGrantCookieName(token),
+		Value:    grant,
+		Path:     "/",
+		Domain:   h.CookieDomain,
+		Expires:  expiresAt,
+		HttpOnly: true,
+		Secure:   h.CookieSecure,
+		SameSite: h.cookieSameSite(),
+	})
+}
+
+func (h AccessHandler) cookieSameSite() http.SameSite {
+	if h.CookieSameSite == 0 {
+		return http.SameSiteLaxMode
+	}
+	return h.CookieSameSite
+}
+
+func accessGrantCookieName(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return accessGrantCookiePrefix + hex.EncodeToString(sum[:8])
+}
+
+func validAccessToken(token string) bool {
+	trimmed := strings.TrimSpace(token)
+	return trimmed != "" && len(trimmed) <= 256
+}
+
 func clientIP(r *http.Request) string {
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		return v
+		return strings.TrimSpace(strings.Split(v, ",")[0])
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
