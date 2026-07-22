@@ -38,13 +38,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/go
+
       - name: Go依存関係を取得
-        run: go mod download
+        shell: bash
+        run: |
+          set -o pipefail
+          go mod download 2>&1 | tee .ci-logs/go/mod-download.log
 
       - name: Goフォーマットを確認
         shell: bash
         run: |
           unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+          printf '%s\n' "$unformatted" | tee .ci-logs/go/gofmt.log
           if [ -n "$unformatted" ]; then
             echo "次のGoファイルがgofmtされていません:"
             echo "$unformatted"
@@ -52,13 +59,31 @@ jobs:
           fi
 
       - name: Go静的解析を実行
-        run: go vet ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go vet ./... 2>&1 | tee .ci-logs/go/vet.log
 
       - name: Goテストを実行
-        run: go test -count=1 ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 ./... 2>&1 | tee .ci-logs/go/test.log
 
       - name: Go実行バイナリをビルド
-        run: go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker
+        shell: bash
+        run: |
+          set -o pipefail
+          go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker 2>&1 | tee .ci-logs/go/build.log
+
+      - name: Go失敗ログを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-go-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-logs/go
+          if-no-files-found: ignore
+          retention-days: 7
 
   web:
     name: Web / lint・typecheck・build
@@ -86,16 +111,40 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-npm-
 
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/web
+
       - name: Web依存関係をインストール
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          set -o pipefail
+          npm install --no-audit --no-fund 2>&1 | tee .ci-logs/web/install.log
 
       - name: ESLintを実行
-        run: npm run lint
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee .ci-logs/web/lint.log
 
       - name: TypeScript型チェックを実行
-        run: npm run typecheck
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee .ci-logs/web/typecheck.log
 
       - name: Next.jsをビルド
+        shell: bash
         env:
           VAULTSEND_API_URL: http://localhost:8080
-        run: npm run build
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee .ci-logs/web/build.log
+
+      - name: Web失敗ログを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-web-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: web/.ci-logs/web
+          if-no-files-found: ignore
+          retention-days: 7
