@@ -1,0 +1,49 @@
+name: 一時APIErrorフィールド修正
+
+on:
+  push:
+    branches:
+      - feature/github-actions-ci
+    paths:
+      - .github/workflows/temporary-api-error-field-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: 対象ブランチを取得
+        uses: actions/checkout@v7
+        with:
+          ref: feature/github-actions-ci
+
+      - name: APIErrorフィールド名を置換
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("internal/service/billing.go")
+          content = path.read_text()
+          old = "\t\tError:           PlanLimitErrorType,"
+          new = "\t\tErrorType:       PlanLimitErrorType,"
+
+          if content.count(old) != 1:
+              raise SystemExit(f"置換対象が1件ではありません: {content.count(old)}")
+
+          path.write_text(content.replace(old, new))
+          PY
+          gofmt -w internal/service/billing.go
+
+      - name: 修正をコミット
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/service/billing.go
+          git commit -m "プラン制限エラーの内部フィールド名を修正"
+          git push origin HEAD:feature/github-actions-ci
