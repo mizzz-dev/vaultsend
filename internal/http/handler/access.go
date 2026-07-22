@@ -30,7 +30,7 @@ func (h AccessHandler) InspectAccess(w http.ResponseWriter, r *http.Request) {
 		render.Error(w, http.StatusBadRequest, "invalid_token", "token が不正です", chimw.GetReqID(r.Context()))
 		return
 	}
-	out, err := h.Service.InspectAccess(r.Context(), token)
+	out, err := h.Service.InspectAccessWithGrant(r.Context(), token, readAccessGrantCookie(r, token))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -60,8 +60,8 @@ func (h AccessHandler) VerifyAccess(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, r, err)
 		return
 	}
-	if out.Grant != "" {
-		h.setAccessGrantCookie(w, token, out.Grant, out.ExpiresAt)
+	if out.Grant != "" && out.ExpiresAt != nil {
+		h.setAccessGrantCookie(w, token, out.Grant, *out.ExpiresAt)
 	}
 	render.JSON(w, http.StatusOK, out)
 }
@@ -77,14 +77,9 @@ func (h AccessHandler) GenerateDownloadURL(w http.ResponseWriter, r *http.Reques
 		render.Error(w, http.StatusBadRequest, "invalid_token", "access_token が不正です", chimw.GetReqID(r.Context()))
 		return
 	}
-	grantCookie, _ := r.Cookie(accessGrantCookieName(token))
-	grant := ""
-	if grantCookie != nil {
-		grant = grantCookie.Value
-	}
 	out, err := h.Service.GenerateDownloadURL(r.Context(), service.DownloadURLInput{
 		Token:       token,
-		AccessGrant: grant,
+		AccessGrant: readAccessGrantCookie(r, token),
 		FileID:      fileID,
 		IPAddress:   clientIP(r),
 		UserAgent:   r.UserAgent(),
@@ -114,6 +109,14 @@ func (h AccessHandler) cookieSameSite() http.SameSite {
 		return http.SameSiteLaxMode
 	}
 	return h.CookieSameSite
+}
+
+func readAccessGrantCookie(r *http.Request, token string) string {
+	cookie, err := r.Cookie(accessGrantCookieName(token))
+	if err != nil || cookie == nil {
+		return ""
+	}
+	return cookie.Value
 }
 
 func accessGrantCookieName(token string) string {
