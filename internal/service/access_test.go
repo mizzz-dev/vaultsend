@@ -12,6 +12,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const testAccessGrantSecret = "test-access-grant-secret-at-least-32-bytes"
+
 type fakeAccessStore struct {
 	token         store.AccessToken
 	shipment      store.Shipment
@@ -72,6 +74,9 @@ func (f *fakeAccessObjectStore) CompleteMultipartUpload(ctx context.Context, buc
 func (f *fakeAccessObjectStore) GenerateDownloadURL(ctx context.Context, bucket, key string, expiresIn time.Duration) (string, error) {
 	return "https://example.com/dl", nil
 }
+func (f *fakeAccessObjectStore) DeleteObject(ctx context.Context, bucket, key string) error {
+	return nil
+}
 
 func TestInspectAccess_Success(t *testing.T) {
 	shipID := uuid.New()
@@ -92,19 +97,80 @@ func TestInspectAccess_Success(t *testing.T) {
 }
 
 func TestVerifyAccess_InvalidPassword(t *testing.T) {
-	shipID := uuid.New()
-	b, _ := bcrypt.GenerateFromPassword([]byte("correct-password"), bcrypt.DefaultCost)
-	h := string(b)
-	fs := &fakeAccessStore{
-		token:    store.AccessToken{ID: uuid.New(), ShipmentID: shipID, TokenType: "download_access", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxUses: 10, Status: "active"},
-		shipment: store.Shipment{ID: shipID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxDownloads: 10, PasswordHash: &h},
-	}
-	svc := &AccessService{Store: fs}
+	fs := protectedAccessStore(t)
+	svc := &AccessService{Store: fs, AccessGrantSecret: testAccessGrantSecret}
 	wrong := "wrong-password"
-	err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
+	_, err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 401 {
 		t.Fatalf("expected 401 got=%v", err)
+	}
+}
+
+func TestVerifyAccess_SuccessIssuesGrant(t *testing.T) {
+	fs := protectedAccessStore(t)
+	svc := &AccessService{Store: fs, AccessGrantSecret: testAccessGrantSecret, AccessGrantTTL: 5 * time.Minute}
+	password := "correct-password"
+	out, err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &password})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !out.Granted || out.Grant == "" || !out.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+	if err := validateAccessGrant(testAccessGrantSecret, "raw-token", out.Grant, time.Now().UTC()); err != nil {
+		t.Fatalf("issued grant should be valid: %v", err)
+	}
+}
+
+func TestGenerateDownloadURL_ProtectedShipmentRequiresGrant(t *testing.T) {
+	fs := protectedAccessStore(t)
+	fileID := uuid.New()
+	fs.fileByID = store.File{ID: fileID, ShipmentID: fs.shipment.ID, StorageBucket: "b", StorageKey: "k"}
+	fs.filesByShip = []store.File{fs.fileByID}
+	svc := &AccessService{Store: fs, ObjectStore: &fakeAccessObjectStore{}, AccessGrantSecret: testAccessGrantSecret}
+
+	_, err := svc.GenerateDownloadURL(context.Background(), DownloadURLInput{Token: "raw-token", FileID: fileID})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 401 || apiErr.Code != "access_verification_required" {
+		t.Fatalf("expected verification required got=%v", err)
+	}
+	if fs.usageUpdated || len(fs.events) != 0 {
+		t.Fatal("unverified request must not consume token or create events")
+	}
+}
+
+func TestGenerateDownloadURL_ProtectedShipmentAcceptsValidGrant(t *testing.T) {
+	fs := protectedAccessStore(t)
+	fileID := uuid.New()
+	fs.fileByID = store.File{ID: fileID, ShipmentID: fs.shipment.ID, StorageBucket: "b", StorageKey: "k"}
+	fs.filesByShip = []store.File{fs.fileByID}
+	svc := &AccessService{Store: fs, ObjectStore: &fakeAccessObjectStore{}, AccessGrantSecret: testAccessGrantSecret}
+	grant, err := issueAccessGrant(testAccessGrantSecret, "raw-token", time.Now().UTC().Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("issue grant: %v", err)
+	}
+
+	out, err := svc.GenerateDownloadURL(context.Background(), DownloadURLInput{Token: "raw-token", AccessGrant: grant, FileID: fileID, IPAddress: "127.0.0.1"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if out.URL == "" || !fs.usageUpdated || len(fs.events) != 1 {
+		t.Fatalf("unexpected result out=%+v events=%d", out, len(fs.events))
+	}
+}
+
+func TestGenerateDownloadURL_RejectsGrantForDifferentToken(t *testing.T) {
+	fs := protectedAccessStore(t)
+	fileID := uuid.New()
+	fs.fileByID = store.File{ID: fileID, ShipmentID: fs.shipment.ID, StorageBucket: "b", StorageKey: "k"}
+	svc := &AccessService{Store: fs, ObjectStore: &fakeAccessObjectStore{}, AccessGrantSecret: testAccessGrantSecret}
+	grant, _ := issueAccessGrant(testAccessGrantSecret, "another-token", time.Now().UTC().Add(5*time.Minute))
+
+	_, err := svc.GenerateDownloadURL(context.Background(), DownloadURLInput{Token: "raw-token", AccessGrant: grant, FileID: fileID})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "access_verification_required" {
+		t.Fatalf("expected verification required got=%v", err)
 	}
 }
 
@@ -144,22 +210,16 @@ func TestGenerateDownloadURL_FileMismatch(t *testing.T) {
 }
 
 func TestVerifyAccess_BruteForceLocked(t *testing.T) {
-	shipID := uuid.New()
-	b, _ := bcrypt.GenerateFromPassword([]byte("correct-password"), bcrypt.DefaultCost)
-	h := string(b)
-	fs := &fakeAccessStore{
-		token:    store.AccessToken{ID: uuid.New(), ShipmentID: shipID, TokenType: "download_access", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxUses: 10, Status: "active"},
-		shipment: store.Shipment{ID: shipID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxDownloads: 10, PasswordHash: &h},
-	}
+	fs := protectedAccessStore(t)
 	guard := NewAccessGuard()
 	guard.VerifyMaxAttempts = 2
-	svc := &AccessService{Store: fs, Guard: guard}
+	svc := &AccessService{Store: fs, Guard: guard, AccessGrantSecret: testAccessGrantSecret}
 	wrong := "wrong-password"
 
 	for i := 0; i < 2; i++ {
-		_ = svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
+		_, _ = svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
 	}
-	err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
+	_, err := svc.VerifyAccess(context.Background(), VerifyAccessInput{Token: "raw-token", Password: &wrong})
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
 		t.Fatalf("expected 429 got=%v", err)
@@ -187,5 +247,19 @@ func TestGenerateDownloadURL_AbuseBlocked(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 429 {
 		t.Fatalf("expected 429 got=%v", err)
+	}
+}
+
+func protectedAccessStore(t *testing.T) *fakeAccessStore {
+	t.Helper()
+	shipID := uuid.New()
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("correct-password"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	hash := string(passwordHash)
+	return &fakeAccessStore{
+		token:    store.AccessToken{ID: uuid.New(), ShipmentID: shipID, TokenType: "download_access", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxUses: 10, Status: "active"},
+		shipment: store.Shipment{ID: shipID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC().Add(1 * time.Hour), MaxDownloads: 10, PasswordHash: &hash},
 	}
 }

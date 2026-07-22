@@ -26,6 +26,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+	if len(cfg.AccessGrantSecret) < 32 {
+		log.Fatal("ACCESS_GRANT_SECRET must be at least 32 bytes for the API process")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -74,10 +77,12 @@ func main() {
 	}
 
 	accessSvc := &service.AccessService{
-		Store:          queries,
-		ObjectStore:    s3Store,
-		DownloadURLTTL: cfg.PresignedURLTTL,
-		Guard:          guard,
+		Store:             queries,
+		ObjectStore:       s3Store,
+		DownloadURLTTL:    cfg.PresignedURLTTL,
+		AccessGrantTTL:    cfg.AccessGrantTTL,
+		AccessGrantSecret: cfg.AccessGrantSecret,
+		Guard:             guard,
 	}
 
 	handler := apphttp.NewServer(cfg, queries, uploadSvc, shipmentSvc, accessSvc, authSvc, billingSvc, orgSvc)
