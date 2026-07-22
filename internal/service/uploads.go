@@ -175,7 +175,16 @@ func (s *UploadService) CompleteUploadSession(ctx context.Context, in CompleteUp
 		return CompleteUploadOutput{}, fmt.Errorf("get upload session: %w", err)
 	}
 	if session.Status == "completed" {
-		return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_already_completed", Message: "既に完了済みです"}
+		// S3完了・DB更新後にレスポンスだけ失われた場合でも、同じcomplete要求を安全に再試行できるようにする。
+		if session.FileID == nil || session.ShipmentID == nil {
+			return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_completed_without_file", Message: "完了済みupload sessionのfile情報が不整合です"}
+		}
+		return CompleteUploadOutput{
+			UploadSessionID: session.ID,
+			FileID:          *session.FileID,
+			ShipmentID:      *session.ShipmentID,
+			Status:          "completed",
+		}, nil
 	}
 	if session.Status != "uploading" && session.Status != "initiated" {
 		return CompleteUploadOutput{}, &APIError{Status: 409, Code: "upload_session_status_conflict", Message: "現在の status では完了できません"}
