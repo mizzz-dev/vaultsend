@@ -26,10 +26,16 @@ func (f *fakeStore) CreateShipment(ctx context.Context, arg store.CreateShipment
 	}
 	return f.shipment, nil
 }
+func (f *fakeStore) GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error) {
+	if f.getErr != nil {
+		return store.Shipment{}, f.getErr
+	}
+	return f.shipment, nil
+}
 func (f *fakeStore) CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error) {
 	f.createSession = arg
 	if f.session.ID == uuid.Nil {
-		f.session = store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID, StorageBucket: arg.StorageBucket, StorageKey: arg.StorageKey, MultipartUploadID: arg.MultipartUploadID, Status: arg.Status, FileName: arg.FileName, ContentType: arg.ContentType, FileSizeBytes: arg.FileSizeBytes, ChecksumSha256: arg.ChecksumSha256}
+		f.session = store.UploadSession{ID: uuid.New(), ShipmentID: arg.ShipmentID, StorageBucket: arg.StorageBucket, StorageKey: arg.StorageKey, MultipartUploadID: arg.MultipartUploadID, Status: arg.Status, FileName: arg.FileName, ContentType: arg.ContentType, FileSizeBytes: arg.FileSizeBytes, ChecksumSha256: arg.ChecksumSha256, OwnerUserID: arg.OwnerUserID}
 	}
 	return f.session, nil
 }
@@ -81,6 +87,27 @@ func TestCreateUploadSession_ValidationError(t *testing.T) {
 	}
 }
 
+func TestCreateUploadSession_ExistingShipmentOwnerConflict(t *testing.T) {
+	shipmentID := uuid.New()
+	ownerID := uuid.New()
+	otherUserID := uuid.New()
+	fs := &fakeStore{shipment: store.Shipment{ID: shipmentID, OwnerUserID: &ownerID, Status: "uploading"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+
+	_, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{
+		ShipmentID:     &shipmentID,
+		OwnerUserID:    &otherUserID,
+		FileName:       "a.txt",
+		ContentType:    "text/plain",
+		FileSize:       10,
+		ChecksumSHA256: "abc",
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 || apiErr.Code != "shipment_owner_conflict" {
+		t.Fatalf("expected owner conflict got=%v", err)
+	}
+}
+
 func TestCompleteUploadSession_Success(t *testing.T) {
 	shipmentID := uuid.New()
 	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, StorageBucket: "b", StorageKey: "k", MultipartUploadID: "u", Status: "uploading", FileName: "a.txt", ContentType: "text/plain", FileSizeBytes: 10, ChecksumSha256: "abc"}}
@@ -91,6 +118,27 @@ func TestCompleteUploadSession_Success(t *testing.T) {
 	}
 	if out.Status != "completed" || !fs.completeCalled {
 		t.Fatal("expected completed flow")
+	}
+}
+
+func TestCompleteUploadSession_OwnerConflict(t *testing.T) {
+	shipmentID := uuid.New()
+	ownerID := uuid.New()
+	otherUserID := uuid.New()
+	fs := &fakeStore{session: store.UploadSession{ID: uuid.New(), ShipmentID: &shipmentID, OwnerUserID: &ownerID, Status: "uploading"}}
+	svc := &UploadService{Store: fs, ObjectStore: &fakeObjectStore{}, S3Bucket: "bucket"}
+
+	_, err := svc.CompleteUploadSession(context.Background(), CompleteUploadInput{
+		UploadSessionID: fs.session.ID,
+		OwnerUserID:     &otherUserID,
+		Parts:           []storage.CompletedPart{{PartNumber: 1, ETag: "etag"}},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 || apiErr.Code != "upload_session_owner_conflict" {
+		t.Fatalf("expected owner conflict got=%v", err)
+	}
+	if fs.completeCalled {
+		t.Fatal("owner conflict must not complete upload")
 	}
 }
 
