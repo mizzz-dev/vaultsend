@@ -653,7 +653,7 @@ func ptrOrNil(v string) *string {
 func newPlanLimitError(code, message string) *APIError {
 	return &APIError{
 		Status:          403,
-		Error:           PlanLimitErrorType,
+		ErrorType:       PlanLimitErrorType,
 		Code:            code,
 		Message:         message,
 		UpgradeRequired: true,
