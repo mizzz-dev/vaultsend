@@ -16,11 +16,13 @@ type fakeStore struct {
 	shipment       store.Shipment
 	file           store.File
 	getErr         error
+	createShipment store.CreateShipmentParams
 	createSession  store.CreateUploadSessionParams
 	completeCalled bool
 }
 
 func (f *fakeStore) CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error) {
+	f.createShipment = arg
 	if f.shipment.ID == uuid.Nil {
 		f.shipment.ID = uuid.New()
 	}
@@ -61,12 +63,14 @@ func (f *fakeStore) CreateFileAndMarkUploadCompleted(ctx context.Context, arg st
 
 type fakeObjectStore struct {
 	completeErr error
+	partCount   int
 }
 
 func (f *fakeObjectStore) CreateMultipartUpload(ctx context.Context, bucket, key, contentType string) (string, error) {
 	return "upload-id", nil
 }
 func (f *fakeObjectStore) BatchPresignUploadParts(ctx context.Context, bucket, key, uploadID string, partCount int, expiresIn time.Duration) ([]storage.PresignedPart, error) {
+	f.partCount = partCount
 	return []storage.PresignedPart{{PartNumber: 1, URL: "https://example.com/1"}}, nil
 }
 func (f *fakeObjectStore) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []storage.CompletedPart) error {
@@ -84,6 +88,33 @@ func TestCreateUploadSession_ValidationError(t *testing.T) {
 	_, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{FileName: "", ContentType: "text/plain", FileSize: 1})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestCreateUploadSession_10GBUsesDynamicPartSize(t *testing.T) {
+	ownerID := uuid.New()
+	fs := &fakeStore{}
+	objectStore := &fakeObjectStore{}
+	svc := &UploadService{Store: fs, ObjectStore: objectStore, S3Bucket: "bucket"}
+
+	out, err := svc.CreateUploadSession(context.Background(), CreateUploadInput{
+		OwnerUserID:    &ownerID,
+		FileName:       "large.bin",
+		ContentType:    "application/octet-stream",
+		FileSize:       defaultMaxFileSize,
+		ChecksumSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if objectStore.partCount > defaultMaxParts {
+		t.Fatalf("part count exceeded: %d", objectStore.partCount)
+	}
+	if out.PartSize <= defaultPartSizeBytes {
+		t.Fatalf("part size should grow for 10GB file: %d", out.PartSize)
+	}
+	if fs.createShipment.OwnerType != "user" {
+		t.Fatalf("owner type should be user: %s", fs.createShipment.OwnerType)
 	}
 }
 
