@@ -1,9 +1,12 @@
 import type {
+  AccessInspectResponse,
+  AccessVerifyResponse,
   ApiErrorPayload,
   AuthResponse,
   CompleteUploadResponse,
   CreateShipmentResponse,
   CreateUploadResponse,
+  DownloadURLResponse,
   ShipmentDetail,
   ShipmentListResponse,
 } from "@/lib/types";
@@ -111,6 +114,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     });
+  },
+  inspectAccess(token: string) {
+    return request<AccessInspectResponse>(`/access/${encodeURIComponent(token)}`);
+  },
+  verifyAccess(token: string, password?: string) {
+    return request<AccessVerifyResponse>(`/access/${encodeURIComponent(token)}/verify`, {
+      method: "POST",
+      body: JSON.stringify({ password: password || undefined }),
+    });
+  },
+  getDownloadURL(token: string, fileId: string) {
+    const query = new URLSearchParams({ access_token: token });
+    return request<DownloadURLResponse>(
+      `/files/${encodeURIComponent(fileId)}/download-url?${query.toString()}`,
+    );
   },
   listShipments(limit = 10, offset = 0) {
     const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
