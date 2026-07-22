@@ -17,7 +17,9 @@ import (
 const (
 	defaultPartSizeBytes int32 = 8 * 1024 * 1024
 	defaultMaxFileSize   int64 = 10 * 1024 * 1024 * 1024 // 設計書の仮置き値: 10GB
-	defaultMaxParts            = 1000                    // 仮置き: レスポンス肥大化を防ぐ上限
+	defaultMaxParts            = 1000                    // Presigned URLレスポンスの肥大化を防ぐ上限
+	oneMiB               int64 = 1024 * 1024
+	maxInt32             int64 = 1<<31 - 1
 )
 
 type APIError struct {
@@ -97,7 +99,10 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 		}
 	}
 
-	partSize := s.partSize()
+	partSize, err := s.partSizeForFile(in.FileSize)
+	if err != nil {
+		return CreateUploadOutput{}, err
+	}
 	partCount := int(math.Ceil(float64(in.FileSize) / float64(partSize)))
 	if partCount > s.maxParts() {
 		return CreateUploadOutput{}, &APIError{Status: 400, Code: "file_too_large_for_single_session", Message: "パート数が上限を超えています"}
@@ -105,9 +110,13 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 
 	shipmentID := in.ShipmentID
 	if shipmentID == nil {
-		// 仮置き: shipment 作成API前の段階でも uploads 単体で進められるよう draft shipment を作成する。
+		ownerType := "anonymous"
+		if in.OwnerUserID != nil {
+			ownerType = "user"
+		}
+		// shipment 作成API前でも uploads 単体で進められるよう draft shipment を作成する。
 		shipment, err := s.Store.CreateShipment(ctx, store.CreateShipmentParams{
-			OwnerType:      "anonymous",
+			OwnerType:      ownerType,
 			OwnerUserID:    in.OwnerUserID,
 			OrganizationID: in.OrganizationID,
 			Status:         "uploading",
@@ -279,6 +288,21 @@ func isContentTypeLike(v string) bool {
 	}
 	split := strings.Split(v, "/")
 	return len(split) == 2 && split[0] != "" && split[1] != ""
+}
+
+func (s *UploadService) partSizeForFile(fileSize int64) (int32, error) {
+	base := int64(s.partSize())
+	required := (fileSize + int64(s.maxParts()) - 1) / int64(s.maxParts())
+	if required <= base {
+		return int32(base), nil
+	}
+
+	// Presigned URL数を上限内に保ちつつ、扱いやすいMiB単位へ切り上げる。
+	rounded := ((required + oneMiB - 1) / oneMiB) * oneMiB
+	if rounded > maxInt32 {
+		return 0, &APIError{Status: 400, Code: "file_too_large_for_single_session", Message: "必要なパートサイズが上限を超えています"}
+	}
+	return int32(rounded), nil
 }
 
 func (s *UploadService) partSize() int32 {
