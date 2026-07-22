@@ -256,7 +256,7 @@ func TestBilling_PlanLimitErrorFormat(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if apiErr.Error != PlanLimitErrorType || !apiErr.UpgradeRequired || apiErr.RecommendedPlan != RecommendedPlanPro {
+	if apiErr.ErrorType != PlanLimitErrorType || !apiErr.UpgradeRequired || apiErr.RecommendedPlan != RecommendedPlanPro {
 		t.Fatalf("unexpected api error: %+v", apiErr)
 	}
 }
