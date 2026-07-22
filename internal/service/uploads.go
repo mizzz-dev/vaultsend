@@ -34,6 +34,7 @@ func (e *APIError) Error() string { return e.Code + ": " + e.Message }
 
 type UploadStore interface {
 	CreateShipment(ctx context.Context, arg store.CreateShipmentParams) (store.Shipment, error)
+	GetShipment(ctx context.Context, id uuid.UUID) (store.Shipment, error)
 	CreateUploadSession(ctx context.Context, arg store.CreateUploadSessionParams) (store.UploadSession, error)
 	GetUploadSessionByID(ctx context.Context, id uuid.UUID) (store.UploadSession, error)
 	CreateFile(ctx context.Context, arg store.CreateFileParams) (store.File, error)
@@ -75,6 +76,7 @@ type CreateUploadOutput struct {
 
 type CompleteUploadInput struct {
 	UploadSessionID uuid.UUID
+	OwnerUserID     *uuid.UUID
 	Parts           []storage.CompletedPart
 }
 
@@ -119,6 +121,8 @@ func (s *UploadService) CreateUploadSession(ctx context.Context, in CreateUpload
 			return CreateUploadOutput{}, fmt.Errorf("create shipment: %w", err)
 		}
 		shipmentID = &shipment.ID
+	} else if err := s.validateExistingShipment(ctx, *shipmentID, in.OwnerUserID, in.OrganizationID); err != nil {
+		return CreateUploadOutput{}, err
 	}
 
 	objectKey := buildObjectKey(*shipmentID, in.FileName)
@@ -173,6 +177,9 @@ func (s *UploadService) CompleteUploadSession(ctx context.Context, in CompleteUp
 			return CompleteUploadOutput{}, &APIError{Status: 404, Code: "upload_session_not_found", Message: "upload session が見つかりません"}
 		}
 		return CompleteUploadOutput{}, fmt.Errorf("get upload session: %w", err)
+	}
+	if !sameOptionalUUID(session.OwnerUserID, in.OwnerUserID) {
+		return CompleteUploadOutput{}, &APIError{Status: 403, Code: "upload_session_owner_conflict", Message: "この upload session を完了する権限がありません"}
 	}
 	if session.Status == "completed" {
 		// S3完了・DB更新後にレスポンスだけ失われた場合でも、同じcomplete要求を安全に再試行できるようにする。
@@ -231,6 +238,33 @@ func (s *UploadService) validateCreateInput(in CreateUploadInput) error {
 		return &APIError{Status: 400, Code: "invalid_content_type", Message: "content_type が不正です"}
 	}
 	return nil
+}
+
+func (s *UploadService) validateExistingShipment(ctx context.Context, shipmentID uuid.UUID, ownerUserID, organizationID *uuid.UUID) error {
+	shipment, err := s.Store.GetShipment(ctx, shipmentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return &APIError{Status: 404, Code: "shipment_not_found", Message: "shipment が見つかりません"}
+		}
+		return fmt.Errorf("get shipment for upload: %w", err)
+	}
+	if shipment.Status != "draft" && shipment.Status != "uploading" && shipment.Status != "ready" {
+		return &APIError{Status: 409, Code: "shipment_status_conflict", Message: "現在の shipment status ではファイルを追加できません"}
+	}
+	if !sameOptionalUUID(shipment.OwnerUserID, ownerUserID) {
+		return &APIError{Status: 403, Code: "shipment_owner_conflict", Message: "この shipment にファイルを追加する権限がありません"}
+	}
+	if !sameOptionalUUID(shipment.OrganizationID, organizationID) {
+		return &APIError{Status: 409, Code: "shipment_organization_conflict", Message: "organization_id が既存 shipment と一致しません"}
+	}
+	return nil
+}
+
+func sameOptionalUUID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 func buildObjectKey(shipmentID uuid.UUID, fileName string) string {
