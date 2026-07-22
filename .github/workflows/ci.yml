@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=mod
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  go:
+    name: Go / format・vet・test・build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Goをセットアップ
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go依存関係を取得
+        run: go mod download
+
+      - name: Goフォーマットを確認
+        shell: bash
+        run: |
+          unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+          if [ -n "$unformatted" ]; then
+            echo "次のGoファイルがgofmtされていません:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Go静的解析を実行
+        run: go vet ./...
+
+      - name: Goテストを実行
+        run: go test -count=1 ./...
+
+      - name: Go実行バイナリをビルド
+        run: go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker
+
+  web:
+    name: Web / lint・typecheck・build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v4
+
+      - name: Node.jsをセットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+
+      - name: npmキャッシュを復元
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: Web依存関係をインストール
+        run: npm install --no-audit --no-fund
+
+      - name: ESLintを実行
+        run: npm run lint
+
+      - name: TypeScript型チェックを実行
+        run: npm run typecheck
+
+      - name: Next.jsをビルド
+        env:
+          VAULTSEND_API_URL: http://localhost:8080
+        run: npm run build
