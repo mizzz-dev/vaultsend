@@ -1,7 +1,7 @@
 APP_NAME := vaultsend-api
 DB_URL ?= postgres://vaultsend:vaultsend@localhost:5432/vaultsend?sslmode=disable
 
-.PHONY: run run-worker run-cleanup-worker web-install web-run web-lint web-typecheck web-build test lint migrate-up migrate-down sqlc-generate
+.PHONY: run run-worker run-cleanup-worker web-install web-run web-lint web-typecheck web-build test test-integration lint migrate-up migrate-down verify-migrations sqlc-generate
 
 run:
 	go run ./cmd/api
@@ -30,6 +30,9 @@ web-build:
 test:
 	go test ./...
 
+test-integration:
+	DATABASE_URL="$(DB_URL)" go test -tags=integration -count=1 -v ./internal/store
+
 lint:
 	go vet ./...
 
@@ -38,6 +41,9 @@ migrate-up:
 
 migrate-down:
 	migrate -path db/migrations -database "$(DB_URL)" down 1
+
+verify-migrations:
+	DATABASE_URL="$(DB_URL)" bash scripts/verify-migrations.sh
 
 sqlc-generate:
 	sqlc generate
