@@ -18,6 +18,7 @@ import (
 )
 
 type fakeShipmentSvcStore struct {
+	ownerUserID     *uuid.UUID
 	lastOwnerUserID *uuid.UUID
 	shipment        store.Shipment
 	shipmentErr     error
@@ -34,12 +35,12 @@ func (f *fakeShipmentSvcStore) GetShipment(ctx context.Context, id uuid.UUID) (s
 	if f.shipment.ID != uuid.Nil {
 		return f.shipment, nil
 	}
-	return store.Shipment{ID: id, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC(), MaxDownloads: 10}, nil
+	return store.Shipment{ID: id, OwnerUserID: f.ownerUserID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC(), MaxDownloads: 10}, nil
 }
 func (f *fakeShipmentSvcStore) GetFilesByIDs(ctx context.Context, ids []uuid.UUID) ([]store.FileWithShipment, error) {
 	out := make([]store.FileWithShipment, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, store.FileWithShipment{File: store.File{ID: id, ShipmentID: uuid.New(), UploadStatus: "completed"}, ShipmentStatus: "ready"})
+		out = append(out, store.FileWithShipment{File: store.File{ID: id, ShipmentID: uuid.New(), UploadStatus: "completed"}, ShipmentStatus: "ready", OwnerUserID: f.ownerUserID})
 	}
 	return out, nil
 }
@@ -142,12 +143,13 @@ func TestCreateShipmentHandler_BadExpiresAt(t *testing.T) {
 }
 
 func TestGetShipmentHandler_Success(t *testing.T) {
-	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
+	ownerID := uuid.New()
+	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{ownerUserID: &ownerID}}
 	h := ShipmentHandler{Service: svc}
 	r := chi.NewRouter()
 	r.Get("/v1/shipments/{id}", h.GetShipment)
 	req := httptest.NewRequest(http.MethodGet, "/v1/shipments/"+uuid.NewString(), nil)
-	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: ownerID, Email: "a@example.com"}))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -168,12 +170,13 @@ func TestListShipmentsHandler_Pagination(t *testing.T) {
 }
 
 func TestListShipmentNotificationsHandler_Success(t *testing.T) {
-	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}
+	ownerID := uuid.New()
+	svc := &service.ShipmentService{Store: &fakeShipmentSvcStore{ownerUserID: &ownerID}}
 	h := ShipmentHandler{Service: svc}
 	r := chi.NewRouter()
 	r.Get("/v1/shipments/{id}/notifications", h.ListShipmentNotifications)
 	req := httptest.NewRequest(http.MethodGet, "/v1/shipments/"+uuid.NewString()+"/notifications?limit=10&offset=0", nil)
-	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: uuid.New(), Email: "a@example.com"}))
+	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: ownerID, Email: "a@example.com"}))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -196,7 +199,8 @@ func TestListShipmentNotificationsHandler_InvalidPagination(t *testing.T) {
 }
 
 func TestCreateShipmentHandler_UsesAuthOwnerUserID(t *testing.T) {
-	st := &fakeShipmentSvcStore{}
+	userID := uuid.New()
+	st := &fakeShipmentSvcStore{ownerUserID: &userID}
 	svc := &service.ShipmentService{Store: st}
 	h := ShipmentHandler{Service: svc}
 	payload, _ := json.Marshal(map[string]any{
@@ -205,7 +209,6 @@ func TestCreateShipmentHandler_UsesAuthOwnerUserID(t *testing.T) {
 		"share_mode": "url_shared",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/shipments", bytes.NewReader(payload))
-	userID := uuid.New()
 	req = req.WithContext(middleware.WithAuthUser(req.Context(), service.AuthUser{ID: userID, Email: "a@example.com"}))
 	w := httptest.NewRecorder()
 	h.CreateShipment(w, req)

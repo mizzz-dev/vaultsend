@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=mod
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  go:
+    name: Go / format・vet・test・build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v7
+
+      - name: Goをセットアップ
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/go
+
+      - name: Go依存関係を取得
+        shell: bash
+        run: |
+          set -o pipefail
+          go mod download 2>&1 | tee .ci-logs/go/mod-download.log
+
+      - name: Goフォーマットを確認
+        shell: bash
+        run: |
+          unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l)"
+          printf '%s\n' "$unformatted" | tee .ci-logs/go/gofmt.log
+          if [ -n "$unformatted" ]; then
+            echo "次のGoファイルがgofmtされていません:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Go静的解析を実行
+        shell: bash
+        run: |
+          set -o pipefail
+          go vet ./... 2>&1 | tee .ci-logs/go/vet.log
+
+      - name: Goテストを実行
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -count=1 ./... 2>&1 | tee .ci-logs/go/test.log
+
+      - name: Go実行バイナリをビルド
+        shell: bash
+        run: |
+          set -o pipefail
+          go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker 2>&1 | tee .ci-logs/go/build.log
+
+      - name: Go失敗ログを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-go-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-logs/go
+          if-no-files-found: ignore
+          retention-days: 7
+
+  web:
+    name: Web / lint・typecheck・build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v7
+
+      - name: Node.jsをセットアップ
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.19.0
+
+      - name: npmキャッシュを復元
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/web
+
+      - name: Web依存関係をインストール
+        shell: bash
+        run: |
+          set -o pipefail
+          npm install --no-audit --no-fund 2>&1 | tee .ci-logs/web/install.log
+
+      - name: ESLintを実行
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee .ci-logs/web/lint.log
+
+      - name: TypeScript型チェックを実行
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run typecheck 2>&1 | tee .ci-logs/web/typecheck.log
+
+      - name: Next.jsをビルド
+        shell: bash
+        env:
+          VAULTSEND_API_URL: http://localhost:8080
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee .ci-logs/web/build.log
+
+      - name: Web失敗ログを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-web-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: web/.ci-logs/web
+          if-no-files-found: ignore
+          retention-days: 7

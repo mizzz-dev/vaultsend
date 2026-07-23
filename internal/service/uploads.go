@@ -24,7 +24,7 @@ const (
 
 type APIError struct {
 	Status          int
-	Error           string
+	ErrorType       string
 	Code            string
 	Message         string
 	UpgradeRequired bool

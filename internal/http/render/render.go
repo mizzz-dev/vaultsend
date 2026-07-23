@@ -34,7 +34,7 @@ func Error(w http.ResponseWriter, status int, code, message, requestID string) {
 
 func ServiceError(w http.ResponseWriter, err *service.APIError, requestID string) {
 	JSON(w, err.Status, ErrorResponse{
-		Error:           err.Error,
+		Error:           err.ErrorType,
 		Code:            err.Code,
 		Message:         err.Message,
 		RequestID:       requestID,

@@ -43,12 +43,12 @@ func TestInspectAccessWithGrant_PasswordlessShipmentIsVerified(t *testing.T) {
 	shipmentID := uuid.New()
 	fs := &fakeAccessStore{
 		token: store.AccessToken{
-			ID:        uuid.New(),
+			ID:         uuid.New(),
 			ShipmentID: shipmentID,
-			TokenType: "download_access",
-			ExpiresAt: time.Now().UTC().Add(time.Hour),
-			MaxUses:   10,
-			Status:    "active",
+			TokenType:  "download_access",
+			ExpiresAt:  time.Now().UTC().Add(time.Hour),
+			MaxUses:    10,
+			Status:     "active",
 		},
 		shipment: store.Shipment{
 			ID:           shipmentID,
