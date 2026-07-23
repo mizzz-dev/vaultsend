@@ -1,16 +1,16 @@
 name: 一時依存ロック生成
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - chore/reproducible-dependencies
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   generate:
-    name: Go・npm依存ロックを生成
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -53,13 +53,15 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           cmp package-lock.json /tmp/package-lock.generated.json
 
-      - name: 依存ロックファイルを保存
-        uses: actions/upload-artifact@v7
-        with:
-          name: generated-dependency-locks-${{ github.run_id }}
-          path: |
-            go.mod
-            go.sum
-            web/package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+      - name: 生成ファイルをコミット
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add go.mod go.sum web/package-lock.json
+          if git diff --cached --quiet; then
+            echo "依存ロックファイルに変更はありません"
+            exit 0
+          fi
+          git commit -m "Goとnpmの依存ロックファイルを生成"
+          git push
