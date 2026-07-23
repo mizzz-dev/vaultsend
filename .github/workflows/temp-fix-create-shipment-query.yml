@@ -1,0 +1,47 @@
+name: 一時CreateShipment SQL修正
+
+on:
+  push:
+    branches:
+      - feature/postgres-integration-tests
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 対象ブランチを取得
+        uses: actions/checkout@v7
+        with:
+          ref: feature/postgres-integration-tests
+
+      - name: プレースホルダーを完全一致で修正
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('internal/store/queries.go')
+          text = path.read_text()
+          old = ') VALUES ($1,$2,$3,$4,$5,$6,$7,$8)\nRETURNING id, owner_type'
+          new = ') VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)\nRETURNING id, owner_type'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'置換対象が1件ではありません: {count}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          gofmt -w internal/store/queries.go
+          git diff --check
+
+      - name: 修正をコミット
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/store/queries.go
+          git commit -m "CreateShipmentのexpires_atプレースホルダー不足を修正"
+          git push origin HEAD:feature/postgres-integration-tests
