@@ -324,7 +324,9 @@ async function readJSON(request) {
 }
 
 async function consumeBody(request) {
-  for await (const _chunk of request) {
-    // mock S3 PUTでは内容を保持せず、受信完了だけを確認する。
+  let receivedBytes = 0;
+  for await (const chunk of request) {
+    receivedBytes += chunk.length;
   }
+  return receivedBytes;
 }
