@@ -13,7 +13,7 @@ run-cleanup-worker:
 	go run ./cmd/cleanup-worker
 
 web-install:
-	cd web && npm install
+	cd web && npm ci
 
 web-run:
 	cd web && npm run dev
