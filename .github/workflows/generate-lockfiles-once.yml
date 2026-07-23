@@ -1,9 +1,9 @@
 name: 一時依存ロック生成
 
 on:
-  push:
+  pull_request:
     branches:
-      - chore/reproducible-dependencies
+      - main
 
 permissions:
   contents: write
@@ -15,8 +15,10 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: リポジトリを取得
+      - name: PRブランチを取得
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.head_ref }}
 
       - name: Goをセットアップ
         uses: actions/setup-go@v6
