@@ -21,7 +21,7 @@ test("ファイルをmultipart uploadしてURL共有shipmentを確定できる",
   });
 
   await expect(page.getByText("proposal.txt")).toBeVisible();
-  await expect(page.getByText("1ファイル")).toBeVisible();
+  await expect(page.getByText("1ファイル", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "アップロードを開始" }).click();
 
