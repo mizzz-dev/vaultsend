@@ -1,0 +1,57 @@
+name: 一時E2Eモックlint修正
+
+on:
+  push:
+    branches:
+      - feature/playwright-e2e
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 対象ブランチを取得
+        uses: actions/checkout@v7
+        with:
+          ref: feature/playwright-e2e
+
+      - name: 未使用変数を残さずリクエスト本文を消費
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('web/e2e/mock-api.mjs')
+          text = path.read_text()
+          old = '''async function consumeBody(request) {
+            for await (const _chunk of request) {
+              // mock S3 PUTでは内容を保持せず、受信完了だけを確認する。
+            }
+          }
+          '''
+          new = '''async function consumeBody(request) {
+            let receivedBytes = 0;
+            for await (const chunk of request) {
+              receivedBytes += chunk.length;
+            }
+            return receivedBytes;
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit('置換対象が1件ではありません')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+
+      - name: 修正をコミット
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/e2e/mock-api.mjs
+          git commit -m "E2Eモックの未使用変数警告を解消"
+          git push origin HEAD:feature/playwright-e2e
