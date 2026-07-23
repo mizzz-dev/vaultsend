@@ -2,7 +2,7 @@
 
 ## 目的
 
-Pull Request と `main` へのpush時に、GoバックエンドとNext.js Webの最低限の品質ゲートを自動実行します。
+Pull Request と `main` へのpush時に、Goバックエンド、PostgreSQL、Next.js Webの品質ゲートを自動実行します。
 
 CIで検出する対象は次のとおりです。
 
@@ -11,6 +11,9 @@ CIで検出する対象は次のとおりです。
 - Goの静的解析エラー
 - Goテスト失敗
 - API・mail worker・cleanup workerのコンパイル失敗
+- migrationのSQL構文・up/down不整合
+- PostgreSQL制約・trigger・cascadeの回帰
+- 手書きStore SQLと実schemaの不整合
 - npm lockfileと`package.json`の不整合
 - ESLintエラー
 - TypeScript型エラー
@@ -47,9 +50,15 @@ permissions:
   contents: read
 ```
 
-CIではAWS、Stripe、PostgreSQLなどの本番Secretを使用しません。
+CIではAWS、Stripe、本番PostgreSQLなどのSecretを使用しません。
 
 ## Go Job
+
+Job名:
+
+```text
+Go / format・vet・test・build
+```
 
 Goのバージョンは`go.mod`の`go`・`toolchain`ディレクティブを参照します。
 
@@ -84,7 +93,48 @@ go mod verify
 
 `go mod tidy`実行後に差分が残るPRは、依存定義が未更新としてCIで失敗します。
 
+## PostgreSQL Job
+
+Job名:
+
+```text
+PostgreSQL / migration・Store integration
+```
+
+`postgres:16`のservice containerを起動し、破棄可能な`vaultsend_test`データベースを使用します。本番DBや本番認証情報は利用しません。
+
+実行内容:
+
+1. PostgreSQL clientの存在確認
+2. 全migrationのup/downペア確認
+3. up migrationを昇順で全件適用
+4. 主要テーブルの存在確認
+5. down migrationを降順で全件適用
+6. `public` schemaにテーブル・enumが残っていないことを確認
+7. up migrationを再適用
+8. `integration` build tag付きStore testを実行
+
+Migration検証:
+
+```bash
+bash scripts/verify-migrations.sh
+```
+
+Store integration test:
+
+```bash
+go test -tags=integration -count=1 -v ./internal/store
+```
+
+詳細は`docs/postgres-integration-tests-ja.md`を参照してください。
+
 ## Web Job
+
+Job名:
+
+```text
+Web / lint・typecheck・build
+```
 
 Node.jsは`web/package.json`の要件に合わせて`20.19.0`を使用します。
 
@@ -118,15 +168,16 @@ npmキャッシュkeyには`web/package-lock.json`のhashを使用します。lo
 
 ## タイムアウト
 
-Go、Webともに15分でタイムアウトします。
+Go、PostgreSQL、Webの各Jobは15分でタイムアウトします。
 
 依存サービス待ちや無限ループによりRunnerを長時間占有しないための上限です。
 
 ## 失敗ログ
 
-Go・Webともに、失敗時だけ各コマンドの出力をArtifactへ保存します。
+失敗時だけ各コマンドの出力をArtifactへ保存します。
 
 - Go: `ci-go-failure-{run_id}-{run_attempt}`
+- PostgreSQL: `ci-postgres-failure-{run_id}-{run_attempt}`
 - Web: `ci-web-failure-{run_id}-{run_attempt}`
 - 保持期間: 7日
 
@@ -161,6 +212,24 @@ go build ./cmd/api ./cmd/worker ./cmd/cleanup-worker
 
 依存更新作業では一時的に`GOFLAGS`を解除して`go mod tidy`を実行し、生成結果をコミットしてください。
 
+### PostgreSQL
+
+1. PostgreSQL service containerのhealth check
+2. `PostgreSQL clientを確認`
+3. `migrationのup・down・upを検証`
+4. `Store integration testを実行`
+5. 失敗Artifactの`migrations.log`または`store-integration.log`
+
+ローカル確認例:
+
+```bash
+docker compose up -d postgres
+make verify-migrations
+make test-integration
+```
+
+`verify-migrations`はdown後にupを再適用するため、破棄可能なテスト専用DBで実行してください。
+
 ### Web
 
 1. `Web依存関係をインストール`
@@ -183,6 +252,7 @@ VAULTSEND_API_URL=http://localhost:8080 npm run build
 PRマージ前に次のcheckを必須化します。
 
 - `Go / format・vet・test・build`
+- `PostgreSQL / migration・Store integration`
 - `Web / lint・typecheck・build`
 
 併せて以下を推奨します。
@@ -199,20 +269,19 @@ Branch Protectionはリポジトリ設定変更であり、コード差分には
 
 現在のCIには含めません。
 
-- PostgreSQLを利用するintegration test
 - LocalStackまたは実AWSを利用するS3・SQS・SES test
 - Stripe webhook integration test
 - Playwright E2E
-- migrationのup/down実行検証
+- PostgreSQL負荷試験
+- 複数PostgreSQLバージョンのmatrix test
 - Docker image build
 - deployment
 - CodeQLや依存脆弱性スキャン
 
 ## 次の改善候補
 
-1. PostgreSQL service containerを利用したrepository層integration test
-2. migrationのup/down実行検証
-3. Playwrightによる送信・受信フローE2E
-4. CodeQLとDependabotの追加
-5. Docker image buildとコンテナ起動確認
-6. staging・production deployment workflowの追加
+1. transaction・競合・同時更新を含むStore integration test拡充
+2. Playwrightによる送信・受信フローE2E
+3. CodeQLとDependabotの追加
+4. Docker image buildとコンテナ起動確認
+5. staging・production deployment workflowの追加
