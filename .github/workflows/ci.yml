@@ -90,6 +90,72 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  postgres:
+    name: PostgreSQL / migration・Store integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vaultsend_test
+          POSTGRES_USER: vaultsend
+          POSTGRES_PASSWORD: vaultsend
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vaultsend -d vaultsend_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://vaultsend:vaultsend@localhost:5432/vaultsend_test?sslmode=disable
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v7
+
+      - name: Goをセットアップ
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: PostgreSQL clientを確認
+        shell: bash
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+          psql --version
+
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/postgres
+
+      - name: migrationのup・down・upを検証
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/verify-migrations.sh 2>&1 | tee .ci-logs/postgres/migrations.log
+
+      - name: Store integration testを実行
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -tags=integration -count=1 -v ./internal/store 2>&1 | tee .ci-logs/postgres/store-integration.log
+
+      - name: PostgreSQL失敗ログを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-postgres-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ci-logs/postgres
+          if-no-files-found: ignore
+          retention-days: 7
+
   web:
     name: Web / lint・typecheck・build
     runs-on: ubuntu-latest
