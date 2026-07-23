@@ -41,10 +41,17 @@ jobs:
         run: |
           test -s go.sum
           test -s web/package-lock.json
+
+          cp go.mod /tmp/go.mod.generated
+          cp go.sum /tmp/go.sum.generated
           go mod tidy
-          git diff --exit-code -- go.mod go.sum
+          cmp go.mod /tmp/go.mod.generated
+          cmp go.sum /tmp/go.sum.generated
+
+          cp web/package-lock.json /tmp/package-lock.generated.json
           cd web
           npm ci --ignore-scripts --no-audit --no-fund
+          cmp package-lock.json /tmp/package-lock.generated.json
 
       - name: 依存ロックファイルを保存
         uses: actions/upload-artifact@v7
