@@ -19,7 +19,7 @@ concurrency:
 env:
   CI: "true"
   GOTOOLCHAIN: local
-  GOFLAGS: -mod=mod
+  GOFLAGS: -mod=readonly
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
@@ -41,11 +41,16 @@ jobs:
       - name: 診断ログディレクトリを作成
         run: mkdir -p .ci-logs/go
 
-      - name: Go依存関係を取得
+      - name: Go依存関係を検証
         shell: bash
         run: |
           set -o pipefail
-          go mod download 2>&1 | tee .ci-logs/go/mod-download.log
+          {
+            go mod download
+            go mod verify
+            go mod tidy
+            git diff --exit-code -- go.mod go.sum
+          } 2>&1 | tee .ci-logs/go/dependencies.log
 
       - name: Goフォーマットを確認
         shell: bash
@@ -107,7 +112,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.npm
-          key: ${{ runner.os }}-npm-${{ hashFiles('web/package.json') }}
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-npm-
 
@@ -118,7 +123,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          npm install --no-audit --no-fund 2>&1 | tee .ci-logs/web/install.log
+          npm ci --no-audit --no-fund 2>&1 | tee .ci-logs/web/install.log
 
       - name: ESLintを実行
         shell: bash
