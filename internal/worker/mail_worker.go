@@ -40,6 +40,9 @@ func (w *MailWorker) Run(ctx context.Context) error {
 		}
 		messages, err := w.Queue.Receive(ctx, w.MaxMessages, w.WaitSeconds)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return fmt.Errorf("poll mail queue: %w", err)
 		}
 		for _, m := range messages {
