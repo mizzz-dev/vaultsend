@@ -55,7 +55,7 @@ func (q *Queries) createShipment(ctx context.Context, db dbtx, arg CreateShipmen
 	const query = `
 INSERT INTO shipments (
     owner_type, owner_user_id, organization_id, status, share_mode, title, message, max_downloads, expires_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 RETURNING id, owner_type, owner_user_id, organization_id, status, share_mode, title, message, password_hash, max_downloads,
           current_downloads, expires_at, sent_at, revoked_at, deleted_at, created_at, updated_at`
 	row := db.QueryRow(ctx, query,
