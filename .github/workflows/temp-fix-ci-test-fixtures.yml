@@ -1,0 +1,109 @@
+name: 一時CIテストfixture修正
+
+on:
+  push:
+    branches:
+      - feature/github-actions-ci
+    paths:
+      - .github/workflows/temp-fix-ci-test-fixtures.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 対象ブランチを取得
+        uses: actions/checkout@v7
+        with:
+          ref: feature/github-actions-ci
+
+      - name: 所有者fixtureを現行仕様へ合わせる
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("internal/http/handler/shipments_test.go")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"置換対象が1件ではありません: count={count} old={old!r}")
+              text = text.replace(old, new, 1)
+
+          def replace_in_function(name: str, old: str, new: str) -> None:
+              global text
+              start = text.index(f"func {name}(")
+              end = text.find("\nfunc ", start + 1)
+              if end == -1:
+                  end = len(text)
+              block = text[start:end]
+              count = block.count(old)
+              if count != 1:
+                  raise SystemExit(f"{name}内の置換対象が1件ではありません: count={count} old={old!r}")
+              block = block.replace(old, new, 1)
+              text = text[:start] + block + text[end:]
+
+          replace_once(
+              "type fakeShipmentSvcStore struct {\n\tlastOwnerUserID *uuid.UUID",
+              "type fakeShipmentSvcStore struct {\n\townerUserID     *uuid.UUID\n\tlastOwnerUserID *uuid.UUID",
+          )
+          replace_in_function(
+              "(f *fakeShipmentSvcStore) GetShipment",
+              'return store.Shipment{ID: id, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC(), MaxDownloads: 10}, nil',
+              'return store.Shipment{ID: id, OwnerUserID: f.ownerUserID, Status: "sent", ShareMode: "url_shared", Title: "件名", ExpiresAt: time.Now().UTC(), MaxDownloads: 10}, nil',
+          )
+          replace_in_function(
+              "(f *fakeShipmentSvcStore) GetFilesByIDs",
+              'out = append(out, store.FileWithShipment{File: store.File{ID: id, ShipmentID: uuid.New(), UploadStatus: "completed"}, ShipmentStatus: "ready"})',
+              'out = append(out, store.FileWithShipment{File: store.File{ID: id, ShipmentID: uuid.New(), UploadStatus: "completed"}, ShipmentStatus: "ready", OwnerUserID: f.ownerUserID})',
+          )
+          replace_in_function(
+              "TestGetShipmentHandler_Success",
+              '\tsvc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}',
+              '\townerID := uuid.New()\n\tsvc := &service.ShipmentService{Store: &fakeShipmentSvcStore{ownerUserID: &ownerID}}',
+          )
+          replace_in_function(
+              "TestGetShipmentHandler_Success",
+              'service.AuthUser{ID: uuid.New(), Email: "a@example.com"}',
+              'service.AuthUser{ID: ownerID, Email: "a@example.com"}',
+          )
+          replace_in_function(
+              "TestListShipmentNotificationsHandler_Success",
+              '\tsvc := &service.ShipmentService{Store: &fakeShipmentSvcStore{}}',
+              '\townerID := uuid.New()\n\tsvc := &service.ShipmentService{Store: &fakeShipmentSvcStore{ownerUserID: &ownerID}}',
+          )
+          replace_in_function(
+              "TestListShipmentNotificationsHandler_Success",
+              'service.AuthUser{ID: uuid.New(), Email: "a@example.com"}',
+              'service.AuthUser{ID: ownerID, Email: "a@example.com"}',
+          )
+          replace_in_function(
+              "TestCreateShipmentHandler_UsesAuthOwnerUserID",
+              '\tst := &fakeShipmentSvcStore{}',
+              '\tuserID := uuid.New()\n\tst := &fakeShipmentSvcStore{ownerUserID: &userID}',
+          )
+          replace_in_function(
+              "TestCreateShipmentHandler_UsesAuthOwnerUserID",
+              '\tuserID := uuid.New()\n\treq = req.WithContext',
+              '\treq = req.WithContext',
+          )
+
+          path.write_text(text)
+          PY
+          gofmt -w internal/http/handler/shipments_test.go
+
+      - name: 修正をコミット
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/http/handler/shipments_test.go
+          git diff --cached --check
+          git commit -m "shipment handlerテストの所有者fixtureを修正"
+          git push origin HEAD:feature/github-actions-ci
