@@ -28,7 +28,7 @@ func TestPostgresStoreShipmentAndFileLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PostgreSQL poolの作成に失敗しました: %v", err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatalf("PostgreSQLへの接続に失敗しました: %v", err)
