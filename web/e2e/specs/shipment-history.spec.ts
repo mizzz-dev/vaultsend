@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 const API_PATH = "/api/v1/shipments";
 
@@ -13,18 +13,19 @@ test("送信履歴を検索・絞り込みし、詳細を確認できる", async
   await expect(page.getByText("E2E User", { exact: true })).toBeVisible();
 
   const summary = page.getByLabel("送信状況サマリー");
+  const detailPanel = page.getByLabel("送信詳細");
   await expect(summary.getByText("3", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /契約書一式/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /製品紹介資料/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /旧見積書/ })).toBeVisible();
 
   await expect(
-    page.getByRole("heading", { name: "契約書一式", level: 2 }),
+    detailPanel.getByRole("heading", { name: "契約書一式", level: 2 }),
   ).toBeVisible();
-  await expect(page.getByText("client@example.com", { exact: true })).toBeVisible();
-  await expect(page.getByText("通知 1回", { exact: true })).toBeVisible();
-  await expect(page.getByText("受領済み", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "通知を再送" })).toBeVisible();
+  await expect(detailPanel.getByText("client@example.com", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByText("通知 1回", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByText("受領済み", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByRole("button", { name: "通知を再送" })).toBeVisible();
 
   const search = page.getByLabel("送信履歴を検索");
   await search.fill("shipment-history-2");
@@ -33,10 +34,10 @@ test("送信履歴を検索・絞り込みし、詳細を確認できる", async
 
   await page.getByRole("button", { name: /製品紹介資料/ }).click();
   await expect(
-    page.getByRole("heading", { name: "製品紹介資料", level: 2 }),
+    detailPanel.getByRole("heading", { name: "製品紹介資料", level: 2 }),
   ).toBeVisible();
-  await expect(page.getByText("URL共有", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "通知を再送" })).toHaveCount(0);
+  await expect(detailPanel.getByText("URL共有", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByRole("button", { name: "通知を再送" })).toHaveCount(0);
 
   await search.clear();
   await page.getByLabel("状態で絞り込み").selectOption("accessed");
@@ -57,8 +58,9 @@ test("受信者限定送信の通知を再送し、論理削除できる", async
   await installShipmentRoutes(page);
 
   await page.goto("/shipments");
+  const detailPanel = page.getByLabel("送信詳細");
   await expect(
-    page.getByRole("heading", { name: "契約書一式", level: 2 }),
+    detailPanel.getByRole("heading", { name: "契約書一式", level: 2 }),
   ).toBeVisible();
 
   const resendResponsePromise = page.waitForResponse(
@@ -66,13 +68,13 @@ test("受信者限定送信の通知を再送し、論理削除できる", async
       response.url().endsWith(`${API_PATH}/shipment-history-1/resend`) &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "通知を再送" }).click();
+  await detailPanel.getByRole("button", { name: "通知を再送" }).click();
   expect((await resendResponsePromise).status()).toBe(202);
 
   await expect(
     page.getByText("受信者への通知を再送キューに登録しました。", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("通知 2回", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByText("通知 2回", { exact: true })).toBeVisible();
 
   page.once("dialog", async (dialog) => {
     expect(dialog.type()).toBe("confirm");
@@ -86,24 +88,24 @@ test("受信者限定送信の通知を再送し、論理削除できる", async
       response.url().endsWith(`${API_PATH}/shipment-history-1`) &&
       response.request().method() === "DELETE",
   );
-  await page.getByRole("button", { name: "送信を削除" }).click();
+  await detailPanel.getByRole("button", { name: "送信を削除" }).click();
   expect((await deleteResponsePromise).status()).toBe(200);
 
   await expect(
     page.getByText("shipmentを論理削除し、受信リンクを無効化しました。", { exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("一覧から送信を選択してください。", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByText("一覧から送信を選択してください。", { exact: true })).toBeVisible();
 
   const deletedRow = page.getByRole("button", { name: /契約書一式/ });
   await expect(deletedRow.getByText("削除済み", { exact: true })).toBeVisible();
 
   await deletedRow.click();
   await expect(
-    page.getByRole("heading", { name: "契約書一式", level: 2 }),
+    detailPanel.getByRole("heading", { name: "契約書一式", level: 2 }),
   ).toBeVisible();
-  await expect(page.getByText("削除済み", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "通知を再送" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "送信を削除" })).toHaveCount(0);
+  await expect(detailPanel.getByText("削除済み", { exact: true })).toBeVisible();
+  await expect(detailPanel.getByRole("button", { name: "通知を再送" })).toHaveCount(0);
+  await expect(detailPanel.getByRole("button", { name: "送信を削除" })).toHaveCount(0);
 
   expect(diagnostics.pageErrors).toEqual([]);
   expect(diagnostics.consoleErrors).toEqual([]);
@@ -360,11 +362,7 @@ function parseNonNegativeInteger(value: string | null, fallback: number) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-async function fulfillJSON(
-  route: Parameters<Page["route"]>[1] extends (route: infer T) => unknown ? T : never,
-  status: number,
-  body: unknown,
-) {
+async function fulfillJSON(route: Route, status: number, body: unknown) {
   await route.fulfill({
     status,
     contentType: "application/json; charset=utf-8",
@@ -373,7 +371,7 @@ async function fulfillJSON(
 }
 
 async function fulfillAPIError(
-  route: Parameters<Page["route"]>[1] extends (route: infer T) => unknown ? T : never,
+  route: Route,
   status: number,
   code: string,
   message: string,
