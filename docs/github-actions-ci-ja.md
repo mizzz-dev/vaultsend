@@ -2,7 +2,7 @@
 
 ## 目的
 
-Pull Request と `main` へのpush時に、Goバックエンド、PostgreSQL、Next.js Webの品質ゲートを自動実行します。
+Pull Request と `main` へのpush時に、Goバックエンド、PostgreSQL、Next.js Web、Playwright E2Eの品質ゲートを自動実行します。
 
 CIで検出する対象は次のとおりです。
 
@@ -18,6 +18,11 @@ CIで検出する対象は次のとおりです。
 - ESLintエラー
 - TypeScript型エラー
 - Next.js本番ビルド失敗
+- 送信ウィザードとAPI契約の不整合
+- multipart PUT・CORS・ETag取得の回帰
+- 受信リンクのパスワード検証・Grant Cookie復元の回帰
+- ブラウザのdownload開始失敗
+- Desktop・Mobile viewportでの主要導線回帰
 
 ## Workflow
 
@@ -166,9 +171,46 @@ npm install <package>
 
 npmキャッシュkeyには`web/package-lock.json`のhashを使用します。lockfileが更新されると新しいキャッシュへ切り替わります。
 
+## Playwright E2E Job
+
+Job名:
+
+```text
+Playwright / 送信・受信E2E
+```
+
+Web Jobが成功した後に実行します。Webのlint・型・buildが失敗している状態でブラウザテストを開始しません。
+
+実行内容:
+
+1. `npm ci --no-audit --no-fund`
+2. `npx playwright install --with-deps chromium`
+3. `npm run e2e`
+
+Playwrightは次の2 projectを順次実行します。
+
+- `chromium-desktop`: Desktop Chrome相当
+- `chromium-mobile`: Pixel 7相当
+
+各projectで次の2シナリオを実行し、合計4ケースを確認します。
+
+- `/send` のファイル選択・multipart upload・shipment確定
+- `/r/e2e-token` のパスワード検証・Grant復元・download開始
+
+本番AWS・Stripe・PostgreSQL・メールへ接続せず、`web/e2e/mock-api.mjs`を利用します。Next.jsは本番コードと同じ`/api/v1/*`を呼び出し、E2E起動時だけ次へrewriteします。
+
+```text
+VAULTSEND_API_URL=http://127.0.0.1:8081
+```
+
+詳細は`docs/playwright-e2e-ja.md`を参照してください。
+
 ## タイムアウト
 
-Go、PostgreSQL、Webの各Jobは15分でタイムアウトします。
+- Go: 15分
+- PostgreSQL: 15分
+- Web: 15分
+- Playwright E2E: 20分
 
 依存サービス待ちや無限ループによりRunnerを長時間占有しないための上限です。
 
@@ -179,7 +221,16 @@ Go、PostgreSQL、Webの各Jobは15分でタイムアウトします。
 - Go: `ci-go-failure-{run_id}-{run_attempt}`
 - PostgreSQL: `ci-postgres-failure-{run_id}-{run_attempt}`
 - Web: `ci-web-failure-{run_id}-{run_attempt}`
+- Playwright E2E: `ci-e2e-failure-{run_id}-{run_attempt}`
 - 保持期間: 7日
+
+E2E失敗Artifactには次を含めます。
+
+- コマンドログ
+- HTML report
+- trace
+- screenshot
+- video
 
 成功時はArtifactを作成しません。
 
@@ -247,6 +298,31 @@ npm run typecheck
 VAULTSEND_API_URL=http://localhost:8080 npm run build
 ```
 
+### Playwright E2E
+
+1. `Web依存関係をインストール`
+2. `Chromiumをインストール`
+3. `Playwright E2Eを実行`
+4. Artifactの`test.log`で失敗specとlocatorを確認
+5. HTML report・trace・screenshot・videoで画面状態とnetworkを確認
+
+ローカル確認例:
+
+```bash
+cd web
+npm ci
+npx playwright install --with-deps chromium
+npm run e2e
+```
+
+画面を見ながら再現する場合:
+
+```bash
+npm run e2e:headed
+```
+
+固定sleepを追加して回避せず、表示状態・API response・download eventなど原因に対応する待機条件を追加してください。
+
 ## Branch Protection推奨設定
 
 PRマージ前に次のcheckを必須化します。
@@ -254,6 +330,7 @@ PRマージ前に次のcheckを必須化します。
 - `Go / format・vet・test・build`
 - `PostgreSQL / migration・Store integration`
 - `Web / lint・typecheck・build`
+- `Playwright / 送信・受信E2E`
 
 併せて以下を推奨します。
 
@@ -269,19 +346,22 @@ Branch Protectionはリポジトリ設定変更であり、コード差分には
 
 現在のCIには含めません。
 
+- 実Go API・実PostgreSQL・実S3を利用するブラウザE2E
 - LocalStackまたは実AWSを利用するS3・SQS・SES test
 - Stripe webhook integration test
-- Playwright E2E
-- PostgreSQL負荷試験
-- 複数PostgreSQLバージョンのmatrix test
+- Firefox・WebKit E2E
 - Docker image build
 - deployment
 - CodeQLや依存脆弱性スキャン
 
 ## 次の改善候補
 
-1. transaction・競合・同時更新を含むStore integration test拡充
-2. Playwrightによる送信・受信フローE2E
-3. CodeQLとDependabotの追加
-4. Docker image buildとコンテナ起動確認
-5. staging・production deployment workflowの追加
+1. 実Go API・PostgreSQLを起動したHTTP E2E
+2. 認証登録・ログイン・ログアウトE2E
+3. 送信履歴・再送・削除E2E
+4. multipart再試行・Grant期限切れのE2E
+5. Firefox・WebKit projectの追加
+6. Playwright accessibility snapshotの追加
+7. CodeQLとDependabotの追加
+8. Docker image buildとコンテナ起動確認
+9. staging・production deployment workflowの追加

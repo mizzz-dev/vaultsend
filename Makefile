@@ -1,7 +1,7 @@
 APP_NAME := vaultsend-api
 DB_URL ?= postgres://vaultsend:vaultsend@localhost:5432/vaultsend?sslmode=disable
 
-.PHONY: run run-worker run-cleanup-worker web-install web-run web-lint web-typecheck web-build test test-integration lint migrate-up migrate-down verify-migrations sqlc-generate
+.PHONY: run run-worker run-cleanup-worker web-install web-run web-lint web-typecheck web-build web-e2e test test-integration lint migrate-up migrate-down verify-migrations sqlc-generate
 
 run:
 	go run ./cmd/api
@@ -26,6 +26,9 @@ web-typecheck:
 
 web-build:
 	cd web && npm run build
+
+web-e2e:
+	cd web && npm run e2e
 
 test:
 	go test ./...

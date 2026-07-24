@@ -219,3 +219,63 @@ jobs:
           path: web/.ci-logs/web
           if-no-files-found: ignore
           retention-days: 7
+
+  e2e:
+    name: Playwright / 送信・受信E2E
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: リポジトリを取得
+        uses: actions/checkout@v7
+
+      - name: Node.jsをセットアップ
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.19.0
+
+      - name: npmキャッシュを復元
+        uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-
+
+      - name: 診断ログディレクトリを作成
+        run: mkdir -p .ci-logs/e2e
+
+      - name: Web依存関係をインストール
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci --no-audit --no-fund 2>&1 | tee .ci-logs/e2e/install.log
+
+      - name: Chromiumをインストール
+        shell: bash
+        run: |
+          set -o pipefail
+          npx playwright install --with-deps chromium 2>&1 | tee .ci-logs/e2e/browser-install.log
+
+      - name: Playwright E2Eを実行
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run e2e 2>&1 | tee .ci-logs/e2e/test.log
+
+      - name: E2E失敗ログ・traceを保存
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-e2e-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            web/.ci-logs/e2e
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
